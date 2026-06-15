@@ -49,6 +49,27 @@ fn outline_lists_file_symbols() {
 }
 
 #[test]
+fn symbol_id_is_stable_across_reindex() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::create_dir_all(dir.path().join(".codemap")).unwrap();
+    let mut db = Db::open(&dir.path().join(".codemap/index.db")).unwrap();
+
+    fs::write(dir.path().join("src/pay.rs"), SRC).unwrap();
+    index::index_full(&mut db, dir.path()).unwrap();
+    let id_before = query::resolve(&db, "charge", 25).unwrap()[0].id;
+    let line_before = query::resolve(&db, "charge", 25).unwrap()[0].line;
+
+    // Prepend a blank line: shifts every range down by 1, but identity is unchanged.
+    fs::write(dir.path().join("src/pay.rs"), format!("\n{SRC}")).unwrap();
+    index::index_full(&mut db, dir.path()).unwrap();
+    let hit_after = query::resolve(&db, "charge", 25).unwrap();
+    assert_eq!(hit_after.len(), 1);
+    assert_eq!(hit_after[0].id, id_before, "id must survive reindex");
+    assert_eq!(hit_after[0].line, line_before + 1, "range must be refreshed");
+}
+
+#[test]
 fn reindex_is_idempotent_and_prunes_fts() {
     let (dir, mut db) = setup();
     index::index_full(&mut db, dir.path()).unwrap();
