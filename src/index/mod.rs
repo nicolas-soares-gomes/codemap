@@ -25,6 +25,7 @@ pub fn detect_lang(path: &Path) -> Option<Language> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("rs") => Some(Language::Rust),
         Some("ts" | "mts" | "cts") => Some(Language::TypeScript),
+        Some("py" | "pyi") => Some(Language::Python),
         _ => None,
     }
 }

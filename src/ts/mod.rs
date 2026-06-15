@@ -18,6 +18,7 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
     match lang {
         Language::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
         Language::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+        Language::Python => Some(tree_sitter_python::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -39,6 +40,7 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
     match lang {
         Language::Rust => walk_rust(tree.root_node(), src, &mut scope, false, &mut out),
         Language::TypeScript => walk_ts(tree.root_node(), src, &mut scope, &mut out),
+        Language::Python => walk_py(tree.root_node(), src, &mut scope, false, &mut out),
         _ => {}
     }
     out
@@ -146,6 +148,7 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
     match lang {
         Language::Rust => collect_calls_rust(tree.root_node(), src, &mut out),
         Language::TypeScript => collect_calls_ts(tree.root_node(), src, &mut out),
+        Language::Python => collect_calls_py(tree.root_node(), src, &mut out),
         _ => {}
     }
     out
@@ -291,6 +294,65 @@ fn callee_name_ts(func: Node, src: &[u8]) -> Option<String> {
     match func.kind() {
         "identifier" => Some(node_text(func, src).to_string()),
         "member_expression" => func.child_by_field_name("property").map(|n| node_text(n, src).to_string()),
+        _ => None,
+    }
+}
+
+// ---- Python ----------------------------------------------------------------
+
+fn walk_py(node: Node, src: &[u8], scope: &mut Vec<String>, in_class: bool, out: &mut Vec<Extracted>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    let kind = if in_class { SymbolKind::Method } else { SymbolKind::Function };
+                    emit(out, node_text(nn, src), scope, kind, child, Some(nn));
+                }
+                walk_py(child, src, scope, false, out); // nested defs are plain functions
+            }
+            "class_definition" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    let name = node_text(nn, src).to_string();
+                    emit(out, &name, scope, SymbolKind::Class, child, Some(nn));
+                    scope.push(name);
+                    walk_py(child, src, scope, true, out);
+                    scope.pop();
+                } else {
+                    walk_py(child, src, scope, in_class, out);
+                }
+            }
+            _ => walk_py(child, src, scope, in_class, out),
+        }
+    }
+}
+
+fn collect_calls_py(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call" {
+            if let Some(name) = child.child_by_field_name("function").and_then(|f| callee_name_py(f, src)) {
+                let sp = child.start_position();
+                let ep = child.end_position();
+                out.push(CallSite {
+                    name,
+                    range: Range {
+                        start_line: sp.row as u32 + 1,
+                        start_col: sp.column as u32,
+                        end_line: ep.row as u32 + 1,
+                        end_col: ep.column as u32,
+                    },
+                });
+            }
+        }
+        collect_calls_py(child, src, out);
+    }
+}
+
+fn callee_name_py(func: Node, src: &[u8]) -> Option<String> {
+    match func.kind() {
+        "identifier" => Some(node_text(func, src).to_string()),
+        "attribute" => func.child_by_field_name("attribute").map(|n| node_text(n, src).to_string()),
         _ => None,
     }
 }
