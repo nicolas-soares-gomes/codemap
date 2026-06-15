@@ -26,6 +26,7 @@ pub fn detect_lang(path: &Path) -> Option<Language> {
         Some("rs") => Some(Language::Rust),
         Some("ts" | "mts" | "cts") => Some(Language::TypeScript),
         Some("py" | "pyi") => Some(Language::Python),
+        Some("go") => Some(Language::Go),
         _ => None,
     }
 }

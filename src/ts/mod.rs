@@ -19,6 +19,7 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
         Language::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
         Language::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         Language::Python => Some(tree_sitter_python::LANGUAGE.into()),
+        Language::Go => Some(tree_sitter_go::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -41,6 +42,7 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
         Language::Rust => walk_rust(tree.root_node(), src, &mut scope, false, &mut out),
         Language::TypeScript => walk_ts(tree.root_node(), src, &mut scope, &mut out),
         Language::Python => walk_py(tree.root_node(), src, &mut scope, false, &mut out),
+        Language::Go => walk_go(tree.root_node(), src, &mut scope, &mut out),
         _ => {}
     }
     out
@@ -149,6 +151,7 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
         Language::Rust => collect_calls_rust(tree.root_node(), src, &mut out),
         Language::TypeScript => collect_calls_ts(tree.root_node(), src, &mut out),
         Language::Python => collect_calls_py(tree.root_node(), src, &mut out),
+        Language::Go => collect_calls_go(tree.root_node(), src, &mut out),
         _ => {}
     }
     out
@@ -353,6 +356,104 @@ fn callee_name_py(func: Node, src: &[u8]) -> Option<String> {
     match func.kind() {
         "identifier" => Some(node_text(func, src).to_string()),
         "attribute" => func.child_by_field_name("attribute").map(|n| node_text(n, src).to_string()),
+        _ => None,
+    }
+}
+
+// ---- Go --------------------------------------------------------------------
+
+fn walk_go(node: Node, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<Extracted>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    emit(out, node_text(nn, src), scope, SymbolKind::Function, child, Some(nn));
+                }
+            }
+            "method_declaration" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    if let Some(recv) = recv_type_go(child, src) {
+                        scope.push(recv);
+                        emit(out, node_text(nn, src), scope, SymbolKind::Method, child, Some(nn));
+                        scope.pop();
+                    } else {
+                        emit(out, node_text(nn, src), scope, SymbolKind::Method, child, Some(nn));
+                    }
+                }
+            }
+            "type_declaration" => {
+                let mut tc = child.walk();
+                for spec in child.named_children(&mut tc) {
+                    if spec.kind() == "type_spec" {
+                        if let Some(nn) = spec.child_by_field_name("name") {
+                            let kind = match spec.child_by_field_name("type").map(|t| t.kind()) {
+                                Some("struct_type") => SymbolKind::Struct,
+                                Some("interface_type") => SymbolKind::Interface,
+                                _ => SymbolKind::TypeAlias,
+                            };
+                            emit(out, node_text(nn, src), scope, kind, spec, Some(nn));
+                        }
+                    }
+                }
+            }
+            "const_declaration" => {
+                let mut cc = child.walk();
+                for spec in child.named_children(&mut cc) {
+                    if spec.kind() == "const_spec" {
+                        let mut sc = spec.walk();
+                        for id in spec.named_children(&mut sc) {
+                            if id.kind() == "identifier" {
+                                emit(out, node_text(id, src), scope, SymbolKind::Const, id, Some(id));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => walk_go(child, src, scope, out),
+        }
+    }
+}
+
+fn recv_type_go(method: Node, src: &[u8]) -> Option<String> {
+    let recv = method.child_by_field_name("receiver")?;
+    let mut c = recv.walk();
+    for p in recv.named_children(&mut c) {
+        if p.kind() == "parameter_declaration" {
+            if let Some(ty) = p.child_by_field_name("type") {
+                return Some(node_text(ty, src).trim_start_matches('*').to_string());
+            }
+        }
+    }
+    None
+}
+
+fn collect_calls_go(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            if let Some(name) = child.child_by_field_name("function").and_then(|f| callee_name_go(f, src)) {
+                let sp = child.start_position();
+                let ep = child.end_position();
+                out.push(CallSite {
+                    name,
+                    range: Range {
+                        start_line: sp.row as u32 + 1,
+                        start_col: sp.column as u32,
+                        end_line: ep.row as u32 + 1,
+                        end_col: ep.column as u32,
+                    },
+                });
+            }
+        }
+        collect_calls_go(child, src, out);
+    }
+}
+
+fn callee_name_go(func: Node, src: &[u8]) -> Option<String> {
+    match func.kind() {
+        "identifier" => Some(node_text(func, src).to_string()),
+        "selector_expression" => func.child_by_field_name("field").map(|n| node_text(n, src).to_string()),
         _ => None,
     }
 }

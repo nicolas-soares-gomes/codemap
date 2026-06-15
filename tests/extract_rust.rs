@@ -58,5 +58,6 @@ fn ranges_are_one_based_and_sane() {
 
 #[test]
 fn unsupported_language_returns_empty() {
-    assert!(ts::extract(Language::Go, "package main\nfunc main() {}\n").is_empty());
+    // Swift is not in Tier0 yet (lands in M5 behind a feature flag).
+    assert!(ts::extract(Language::Swift, "func main() {}\n").is_empty());
 }
