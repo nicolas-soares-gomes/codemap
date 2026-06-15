@@ -1,0 +1,11 @@
+# .codemapignore — EXTRA patterns codemap should ignore, on top of .gitignore.
+# Same syntax as .gitignore. Copy to `.codemapignore` and edit.
+#
+# vendor/
+# third_party/
+# *.min.js
+# *.bundle.js
+# *.generated.*
+# **/__generated__/
+# testdata/
+# fixtures/
