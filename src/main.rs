@@ -66,6 +66,11 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Run the MCP server over stdio (tools for AI agents).
+    Mcp {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -82,7 +87,13 @@ fn main() -> Result<()> {
         Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
         Command::Callers { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, false),
         Command::Callees { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, true),
+        Command::Mcp { root } => cmd_mcp(&root),
     }
+}
+
+fn cmd_mcp(root: &Path) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(codemap::mcp::serve_stdio(root.to_path_buf()))
 }
 
 fn db_path(root: &Path) -> PathBuf {
@@ -140,12 +151,8 @@ fn cmd_outline(root: &Path, file: &str) -> Result<()> {
 }
 
 fn cmd_read_symbol(root: &Path, id_arg: &str) -> Result<()> {
-    let id: i64 = id_arg
-        .strip_prefix("sym:")
-        .unwrap_or(id_arg)
-        .parse()
-        .map_err(|_| anyhow::anyhow!("invalid id: {id_arg} (use sym:N or N)"))?;
     let db = open_existing(root)?;
+    let id = query::resolve_arg(&db, id_arg)?;
     let c = query::read_symbol(&db, root, id)?;
     println!("# sym:{} {}  {}:{}-{}", c.id, c.name_path, c.file, c.start_line, c.end_line);
     for (i, line) in c.code.lines().enumerate() {
@@ -156,7 +163,7 @@ fn cmd_read_symbol(root: &Path, id_arg: &str) -> Result<()> {
 
 fn cmd_edges(root: &Path, symbol: &str, depth: i64, limit: i64, forward: bool) -> Result<()> {
     let db = open_existing(root)?;
-    let id = resolve_symbol_arg(&db, symbol)?;
+    let id = query::resolve_arg(&db, symbol)?;
     let hits = if forward {
         query::callees(&db, id, depth, limit)?
     } else {
@@ -173,20 +180,6 @@ fn cmd_edges(root: &Path, symbol: &str, depth: i64, limit: i64, forward: bool) -
         println!("sym:{} | {} | {}:{} | {} | {} | {}", h.id, h.name_path, h.file, h.line, kind_label(h.kind), h.depth, pr);
     }
     Ok(())
-}
-
-/// Resolve a CLI symbol argument (`sym:N`, `N`, or a name/name_path) to a symbol id.
-fn resolve_symbol_arg(db: &Db, arg: &str) -> Result<i64> {
-    if let Some(n) = arg.strip_prefix("sym:").or_else(|| arg.parse::<i64>().ok().map(|_| arg)) {
-        if let Ok(id) = n.parse::<i64>() {
-            return Ok(id);
-        }
-    }
-    let hits = query::resolve(db, arg, 2)?;
-    match hits.as_slice() {
-        [] => bail!("no symbol matches {arg:?}"),
-        [h, ..] => Ok(h.id),
-    }
 }
 
 fn kind_label(k: Option<SymbolKind>) -> String {

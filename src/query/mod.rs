@@ -17,6 +17,22 @@ pub struct Hit {
     pub kind: Option<SymbolKind>,
 }
 
+/// Resolve a symbol argument (`sym:N`, `N`, or a name/name_path) to a symbol id.
+pub fn resolve_arg(db: &Db, arg: &str) -> Result<i64> {
+    if let Some(rest) = arg.strip_prefix("sym:") {
+        if let Ok(id) = rest.parse::<i64>() {
+            return Ok(id);
+        }
+    }
+    if let Ok(id) = arg.parse::<i64>() {
+        return Ok(id);
+    }
+    resolve(db, arg, 1)?
+        .first()
+        .map(|h| h.id)
+        .ok_or_else(|| anyhow!("no symbol matches {arg:?}"))
+}
+
 pub fn resolve(db: &Db, query: &str, limit: i64) -> Result<Vec<Hit>> {
     let mut stmt = db.conn.prepare(
         "SELECT s.id, np.text, fp.text, s.start_line, s.kind

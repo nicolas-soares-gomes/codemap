@@ -5,6 +5,7 @@
 pub mod db;
 pub mod doctor;
 pub mod index;
+pub mod mcp;
 pub mod query;
 pub mod ts;
 pub mod types;
