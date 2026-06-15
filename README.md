@@ -13,7 +13,10 @@ Work in progress.
 - **M0 — Foundation** ✅: SQLite schema, core types, recursive-CTE traversal, migrations.
 - **M1 — Tier0 tree-sitter (Rust, dogfood)** ✅: extraction, full-scan indexer, resolve/read-symbol/outline.
 - **M2 — Graph + MCP + skills** ✅: stable SymbolId, Tier0 call edges, callers/callees, MCP server (rmcp/stdio), multi-platform skill installer.
-- **M3 — SCIP Tier1 (Rust, TS)** 🚧
+- **M3 — SCIP Tier1** 🚧: `doctor` detect-only capability matrix ✅; SCIP ingestion pending.
+- **M4 — Incremental / watcher** ⬜  ·  **M5 — Export / Docker / more languages** ⬜
+
+Tier0 languages: **Rust, TypeScript, Python, Go** (the cheap-SCIP set). More land in M5.
 
 ## Architecture
 
