@@ -17,6 +17,7 @@ pub struct Extracted {
 pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
     match lang {
         Language::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
+        Language::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         _ => None,
     }
 }
@@ -34,9 +35,11 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
     };
     let src = source.as_bytes();
     let mut out = Vec::new();
-    if lang == Language::Rust {
-        let mut scope: Vec<String> = Vec::new();
-        walk_rust(tree.root_node(), src, &mut scope, false, &mut out);
+    let mut scope: Vec<String> = Vec::new();
+    match lang {
+        Language::Rust => walk_rust(tree.root_node(), src, &mut scope, false, &mut out),
+        Language::TypeScript => walk_ts(tree.root_node(), src, &mut scope, &mut out),
+        _ => {}
     }
     out
 }
@@ -140,8 +143,10 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
     };
     let src = source.as_bytes();
     let mut out = Vec::new();
-    if lang == Language::Rust {
-        collect_calls_rust(tree.root_node(), src, &mut out);
+    match lang {
+        Language::Rust => collect_calls_rust(tree.root_node(), src, &mut out),
+        Language::TypeScript => collect_calls_ts(tree.root_node(), src, &mut out),
+        _ => {}
     }
     out
 }
@@ -188,4 +193,104 @@ fn field_text(n: Node, field: &str, src: &[u8]) -> Option<String> {
 
 fn strip_generics(s: &str) -> String {
     s.split(['<', ' ', '\n']).next().unwrap_or(s).trim_start_matches('&').trim().to_string()
+}
+
+// ---- TypeScript ------------------------------------------------------------
+
+fn walk_ts(node: Node, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<Extracted>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "function_declaration" | "generator_function_declaration" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    emit(out, node_text(nn, src), scope, SymbolKind::Function, child, Some(nn));
+                }
+                walk_ts(child, src, scope, out);
+            }
+            "class_declaration" | "abstract_class_declaration" => push_named_ts(child, src, scope, SymbolKind::Class, out),
+            "interface_declaration" => push_named_ts(child, src, scope, SymbolKind::Interface, out),
+            "internal_module" | "module" => push_named_ts(child, src, scope, SymbolKind::Module, out),
+            "enum_declaration" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    let name = node_text(nn, src).to_string();
+                    emit(out, &name, scope, SymbolKind::Enum, child, Some(nn));
+                    scope.push(name);
+                    if let Some(body) = child.child_by_field_name("body") {
+                        let mut bc = body.walk();
+                        for m in body.named_children(&mut bc) {
+                            let mn = match m.kind() {
+                                "property_identifier" => Some(m),
+                                "enum_assignment" => m.child_by_field_name("name"),
+                                _ => None,
+                            };
+                            if let Some(mn) = mn {
+                                emit(out, node_text(mn, src), scope, SymbolKind::Variant, m, Some(mn));
+                            }
+                        }
+                    }
+                    scope.pop();
+                }
+            }
+            "type_alias_declaration" => emit_named(child, src, scope, SymbolKind::TypeAlias, out),
+            "method_definition" | "method_signature" | "abstract_method_signature" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    emit(out, node_text(nn, src), scope, SymbolKind::Method, child, Some(nn));
+                }
+                walk_ts(child, src, scope, out);
+            }
+            "public_field_definition" | "property_signature" => emit_named(child, src, scope, SymbolKind::Field, out),
+            "variable_declarator" => {
+                // Only fn/arrow-valued declarators become symbols (avoids local-variable noise).
+                if let (Some(nn), Some(val)) = (child.child_by_field_name("name"), child.child_by_field_name("value")) {
+                    if matches!(val.kind(), "arrow_function" | "function" | "function_expression") && nn.kind() == "identifier" {
+                        emit(out, node_text(nn, src), scope, SymbolKind::Function, child, Some(nn));
+                    }
+                }
+                walk_ts(child, src, scope, out);
+            }
+            _ => walk_ts(child, src, scope, out),
+        }
+    }
+}
+
+fn push_named_ts(node: Node, src: &[u8], scope: &mut Vec<String>, kind: SymbolKind, out: &mut Vec<Extracted>) {
+    if let Some(nn) = node.child_by_field_name("name") {
+        let name = node_text(nn, src).to_string();
+        emit(out, &name, scope, kind, node, Some(nn));
+        scope.push(name);
+        walk_ts(node, src, scope, out);
+        scope.pop();
+    } else {
+        walk_ts(node, src, scope, out);
+    }
+}
+
+fn collect_calls_ts(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            if let Some(name) = child.child_by_field_name("function").and_then(|f| callee_name_ts(f, src)) {
+                let sp = child.start_position();
+                let ep = child.end_position();
+                out.push(CallSite {
+                    name,
+                    range: Range {
+                        start_line: sp.row as u32 + 1,
+                        start_col: sp.column as u32,
+                        end_line: ep.row as u32 + 1,
+                        end_col: ep.column as u32,
+                    },
+                });
+            }
+        }
+        collect_calls_ts(child, src, out);
+    }
+}
+
+fn callee_name_ts(func: Node, src: &[u8]) -> Option<String> {
+    match func.kind() {
+        "identifier" => Some(node_text(func, src).to_string()),
+        "member_expression" => func.child_by_field_name("property").map(|n| node_text(n, src).to_string()),
+        _ => None,
+    }
 }
