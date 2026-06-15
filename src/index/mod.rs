@@ -4,7 +4,7 @@
 
 use crate::db::{line_index, writer, Db};
 use crate::ts;
-use crate::types::Language;
+use crate::types::{EdgeKind, Language, Provenance, Resolution, Role, SymbolKind};
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use rusqlite::{params, OptionalExtension};
@@ -13,6 +13,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_FILE: usize = 2 * 1024 * 1024;
+const MAX_CALL_CANDIDATES: i64 = 8;
 
 #[derive(Default, Debug)]
 pub struct IndexStats {
@@ -201,4 +202,108 @@ fn index_one(
     tx.commit()?;
     stats.files += 1;
     Ok(())
+}
+
+/// Pass 2: extract call sites and build Tier0 call edges. Syntactic name resolution only,
+/// so edges are provenance=tree_sitter, resolution=ambiguous. Must run after all definitions
+/// are indexed. Idempotent: clears each file's prior call edges/occurrences first.
+pub fn resolve_calls(db: &mut Db, root: &Path) -> Result<u64> {
+    let files: Vec<(i64, String, i64)> = {
+        let mut stmt = db
+            .conn
+            .prepare("SELECT f.id, fp.text, f.lang FROM file f JOIN string_pool fp ON fp.id=f.path_sid")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let mut edges = 0u64;
+    for (file_id, rel, lang_i) in files {
+        let Some(lang) = Language::from_i64(lang_i) else {
+            continue;
+        };
+        let bytes = match std::fs::read(root.join(&rel)) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let source = String::from_utf8_lossy(&bytes);
+        let calls = ts::extract_calls(lang, &source);
+        edges += resolve_calls_for_file(db, file_id, &calls)?;
+    }
+    Ok(edges)
+}
+
+fn resolve_calls_for_file(db: &mut Db, file_id: i64, calls: &[ts::CallSite]) -> Result<u64> {
+    // (id, start_line, end_line, kind) for enclosing-symbol lookup.
+    let callables: Vec<(i64, u32, u32, i64)> = {
+        let mut stmt = db
+            .conn
+            .prepare("SELECT id,start_line,end_line,kind FROM symbol WHERE file_id=?1")?;
+        let rows = stmt
+            .query_map([file_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    let tx = db.conn.transaction()?;
+    tx.execute(
+        "DELETE FROM edge WHERE kind=?1 AND source_symbol_id IN (SELECT id FROM symbol WHERE file_id=?2)",
+        params![EdgeKind::Calls.as_i64(), file_id],
+    )?;
+    tx.execute(
+        "DELETE FROM occurrence WHERE file_id=?1 AND role=?2",
+        params![file_id, Role::Call.as_i64()],
+    )?;
+
+    let mut count = 0u64;
+    {
+        let mut resolve_stmt = tx.prepare(
+            "SELECT s.id FROM symbol s JOIN string_pool n ON n.id=s.name_sid WHERE n.text=?1 LIMIT ?2",
+        )?;
+        for call in calls {
+            let Some(enclosing) = innermost_callable(&callables, call.range.start_line) else {
+                continue;
+            };
+            let candidates: Vec<i64> = resolve_stmt
+                .query_map(params![call.name, MAX_CALL_CANDIDATES], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            if candidates.is_empty() {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO occurrence(symbol_id,enclosing_id,file_id,role,start_line,start_col,end_line,end_col)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    candidates[0], enclosing, file_id, Role::Call.as_i64(),
+                    call.range.start_line, call.range.start_col, call.range.end_line, call.range.end_col
+                ],
+            )?;
+            let occ = tx.last_insert_rowid();
+            for &cand in &candidates {
+                count += tx.execute(
+                    "INSERT OR IGNORE INTO edge(source_symbol_id,target_symbol_id,kind,provenance,resolution)
+                     VALUES (?1,?2,?3,?4,?5)",
+                    params![enclosing, cand, EdgeKind::Calls.as_i64(), Provenance::TreeSitter.as_i64(), Resolution::Ambiguous.as_i64()],
+                )? as u64;
+                tx.execute(
+                    "INSERT OR IGNORE INTO call_site(source_symbol_id,target_symbol_id,kind,occurrence_id)
+                     VALUES (?1,?2,?3,?4)",
+                    params![enclosing, cand, EdgeKind::Calls.as_i64(), occ],
+                )?;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(count)
+}
+
+/// Innermost Function/Method whose range contains `line`.
+fn innermost_callable(callables: &[(i64, u32, u32, i64)], line: u32) -> Option<i64> {
+    callables
+        .iter()
+        .filter(|(_, s, e, k)| {
+            *s <= line && line <= *e && (*k == SymbolKind::Function.as_i64() || *k == SymbolKind::Method.as_i64())
+        })
+        .min_by_key(|(_, s, e, _)| e - s)
+        .map(|(id, _, _, _)| *id)
 }

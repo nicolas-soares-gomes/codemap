@@ -120,6 +120,64 @@ fn emit(out: &mut Vec<Extracted>, name: &str, scope: &[String], kind: SymbolKind
     });
 }
 
+/// A call site: the callee name (rightmost identifier) and the call's range.
+#[derive(Debug, Clone)]
+pub struct CallSite {
+    pub name: String,
+    pub range: Range,
+}
+
+pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
+    let Some(ts_lang) = ts_language(lang) else {
+        return Vec::new();
+    };
+    let mut parser = Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+    let src = source.as_bytes();
+    let mut out = Vec::new();
+    if lang == Language::Rust {
+        collect_calls_rust(tree.root_node(), src, &mut out);
+    }
+    out
+}
+
+fn collect_calls_rust(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            if let Some(name) = child.child_by_field_name("function").and_then(|f| callee_name(f, src)) {
+                let sp = child.start_position();
+                let ep = child.end_position();
+                out.push(CallSite {
+                    name,
+                    range: Range {
+                        start_line: sp.row as u32 + 1,
+                        start_col: sp.column as u32,
+                        end_line: ep.row as u32 + 1,
+                        end_col: ep.column as u32,
+                    },
+                });
+            }
+        }
+        collect_calls_rust(child, src, out);
+    }
+}
+
+fn callee_name(func: Node, src: &[u8]) -> Option<String> {
+    match func.kind() {
+        "identifier" => Some(node_text(func, src).to_string()),
+        "field_expression" => func.child_by_field_name("field").map(|n| node_text(n, src).to_string()),
+        "scoped_identifier" => func.child_by_field_name("name").map(|n| node_text(n, src).to_string()),
+        "generic_function" => func.child_by_field_name("function").and_then(|f| callee_name(f, src)),
+        _ => None,
+    }
+}
+
 fn node_text<'a>(n: Node, src: &'a [u8]) -> &'a str {
     std::str::from_utf8(&src[n.byte_range()]).unwrap_or("")
 }

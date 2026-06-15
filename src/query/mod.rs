@@ -2,7 +2,7 @@
 //! callers/callees and inline staleness guard land in M2/M4.
 
 use crate::db::{line_index, Db};
-use crate::types::SymbolKind;
+use crate::types::{Provenance, Resolution, SymbolKind};
 use anyhow::{anyhow, Result};
 use rusqlite::OptionalExtension;
 use std::path::Path;
@@ -100,6 +100,73 @@ pub fn read_symbol(db: &Db, root: &Path, id: i64) -> Result<Code> {
         end_line,
         code,
     })
+}
+
+/// A node reached by callers/callees traversal, with the edge's provenance/resolution.
+#[derive(Debug, Clone)]
+pub struct EdgeHit {
+    pub id: i64,
+    pub name_path: String,
+    pub file: String,
+    pub line: u32,
+    pub kind: Option<SymbolKind>,
+    pub depth: i64,
+    pub provenance: Option<Provenance>,
+    pub resolution: Option<Resolution>,
+}
+
+pub fn callees(db: &Db, root_id: i64, depth: i64, limit: i64) -> Result<Vec<EdgeHit>> {
+    walk(db, root_id, depth, limit, true)
+}
+
+pub fn callers(db: &Db, root_id: i64, depth: i64, limit: i64) -> Result<Vec<EdgeHit>> {
+    walk(db, root_id, depth, limit, false)
+}
+
+fn walk(db: &Db, root_id: i64, depth: i64, limit: i64, forward: bool) -> Result<Vec<EdgeHit>> {
+    let (from_col, to_col) = if forward {
+        ("source_symbol_id", "target_symbol_id")
+    } else {
+        ("target_symbol_id", "source_symbol_id")
+    };
+    let sql = format!(
+        "WITH RECURSIVE walk(sym, depth, prov, res, path) AS (
+             SELECT ?1, 0, -1, -1, ',' || ?1 || ','
+           UNION ALL
+             SELECT e.{to_col}, w.depth + 1, e.provenance, e.resolution, w.path || e.{to_col} || ','
+             FROM edge e JOIN walk w ON e.{from_col} = w.sym
+             WHERE e.kind = 1 AND w.depth < ?2 AND instr(w.path, ',' || e.{to_col} || ',') = 0
+         ),
+         best AS (
+             SELECT sym, depth, prov, res, ROW_NUMBER() OVER (PARTITION BY sym ORDER BY depth) rn
+             FROM walk WHERE depth > 0
+         )
+         SELECT b.sym, np.text, fp.text, s.start_line, s.kind, b.depth, b.prov, b.res
+         FROM best b
+         JOIN symbol s       ON s.id  = b.sym
+         JOIN string_pool np ON np.id = s.name_path_sid
+         JOIN file f         ON f.id  = s.file_id
+         JOIN string_pool fp ON fp.id = f.path_sid
+         WHERE b.rn = 1
+         ORDER BY b.depth, np.text
+         LIMIT ?3"
+    );
+    let mut stmt = db.conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(rusqlite::params![root_id, depth, limit], |r| {
+            Ok(EdgeHit {
+                id: r.get(0)?,
+                name_path: r.get(1)?,
+                file: r.get(2)?,
+                line: r.get(3)?,
+                kind: SymbolKind::from_i64(r.get(4)?),
+                depth: r.get(5)?,
+                provenance: Provenance::from_i64(r.get(6)?),
+                resolution: Resolution::from_i64(r.get(7)?),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 fn row_to_hit(r: &rusqlite::Row) -> rusqlite::Result<Hit> {

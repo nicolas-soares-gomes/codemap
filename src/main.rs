@@ -46,6 +46,26 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Functions that call a symbol (resolved edges, no code).
+    Callers {
+        symbol: String,
+        #[arg(long, default_value_t = 1)]
+        depth: i64,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Functions a symbol calls (resolved edges, no code).
+    Callees {
+        symbol: String,
+        #[arg(long, default_value_t = 1)]
+        depth: i64,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -60,6 +80,8 @@ fn main() -> Result<()> {
         Command::Resolve { query, limit, root } => cmd_resolve(&root, &query, limit),
         Command::Outline { file, root } => cmd_outline(&root, &file),
         Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
+        Command::Callers { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, false),
+        Command::Callees { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, true),
     }
 }
 
@@ -88,7 +110,8 @@ fn cmd_index(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path.join(".codemap"))?;
     let mut db = Db::open(&db_path(path))?;
     let stats = codemap::index::index_full(&mut db, path)?;
-    println!("codemap: indexed {} files, {} symbols", stats.files, stats.symbols);
+    let edges = codemap::index::resolve_calls(&mut db, path)?;
+    println!("codemap: indexed {} files, {} symbols, {} call edges", stats.files, stats.symbols, edges);
     Ok(())
 }
 
@@ -129,6 +152,41 @@ fn cmd_read_symbol(root: &Path, id_arg: &str) -> Result<()> {
         println!("{:>5}  {line}", c.start_line as usize + i);
     }
     Ok(())
+}
+
+fn cmd_edges(root: &Path, symbol: &str, depth: i64, limit: i64, forward: bool) -> Result<()> {
+    let db = open_existing(root)?;
+    let id = resolve_symbol_arg(&db, symbol)?;
+    let hits = if forward {
+        query::callees(&db, id, depth, limit)?
+    } else {
+        query::callers(&db, id, depth, limit)?
+    };
+    let label = if forward { "callees" } else { "callers" };
+    println!("# {label} of sym:{id}  (depth<={depth}, {} shown)", hits.len());
+    println!("# fields: id | name_path | file:line | kind | depth | prov/res");
+    for h in &hits {
+        let pr = match (h.provenance, h.resolution) {
+            (Some(p), Some(r)) => format!("{}/{}", p.abbrev(), r.abbrev()),
+            _ => "-".into(),
+        };
+        println!("sym:{} | {} | {}:{} | {} | {} | {}", h.id, h.name_path, h.file, h.line, kind_label(h.kind), h.depth, pr);
+    }
+    Ok(())
+}
+
+/// Resolve a CLI symbol argument (`sym:N`, `N`, or a name/name_path) to a symbol id.
+fn resolve_symbol_arg(db: &Db, arg: &str) -> Result<i64> {
+    if let Some(n) = arg.strip_prefix("sym:").or_else(|| arg.parse::<i64>().ok().map(|_| arg)) {
+        if let Ok(id) = n.parse::<i64>() {
+            return Ok(id);
+        }
+    }
+    let hits = query::resolve(db, arg, 2)?;
+    match hits.as_slice() {
+        [] => bail!("no symbol matches {arg:?}"),
+        [h, ..] => Ok(h.id),
+    }
 }
 
 fn kind_label(k: Option<SymbolKind>) -> String {

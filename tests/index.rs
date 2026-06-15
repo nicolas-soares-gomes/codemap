@@ -70,6 +70,31 @@ fn symbol_id_is_stable_across_reindex() {
 }
 
 #[test]
+fn call_edges_link_caller_and_callee() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::create_dir_all(dir.path().join(".codemap")).unwrap();
+    fs::write(
+        dir.path().join("src/g.rs"),
+        "fn callee() {}\nfn caller() {\n    callee();\n}\n",
+    )
+    .unwrap();
+    let mut db = Db::open(&dir.path().join(".codemap/index.db")).unwrap();
+    index::index_full(&mut db, dir.path()).unwrap();
+    let edges = index::resolve_calls(&mut db, dir.path()).unwrap();
+    assert!(edges >= 1, "expected a call edge");
+
+    let callee_id = query::resolve(&db, "callee", 5).unwrap()[0].id;
+    let caller_id = query::resolve(&db, "caller", 5).unwrap()[0].id;
+
+    let callers = query::callers(&db, callee_id, 1, 50).unwrap();
+    assert!(callers.iter().any(|h| h.name_path == "caller"), "caller should call callee");
+
+    let callees = query::callees(&db, caller_id, 1, 50).unwrap();
+    assert!(callees.iter().any(|h| h.name_path == "callee"), "caller should reach callee");
+}
+
+#[test]
 fn reindex_is_idempotent_and_prunes_fts() {
     let (dir, mut db) = setup();
     index::index_full(&mut db, dir.path()).unwrap();
