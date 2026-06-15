@@ -12,7 +12,8 @@ Work in progress.
 
 - **M0 — Foundation** ✅: SQLite schema, core types, recursive-CTE traversal, migrations.
 - **M1 — Tier0 tree-sitter (Rust, dogfood)** ✅: extraction, full-scan indexer, resolve/read-symbol/outline.
-- **M2 — MCP server + compact projection** 🚧
+- **M2 — Graph + MCP + skills** ✅: stable SymbolId, Tier0 call edges, callers/callees, MCP server (rmcp/stdio), multi-platform skill installer.
+- **M3 — SCIP Tier1 (Rust, TS)** 🚧
 
 ## Architecture
 
@@ -24,10 +25,14 @@ Firm policy: codemap **never installs** LSP/SCIP — it detects and instructs (`
 ## Usage (partial)
 
 ```
-codemap index     # build ./.codemap/index.db (Tier0)
+codemap index              # build ./.codemap/index.db (Tier0)
 codemap resolve <name>     # name/name_path -> symbol ids
 codemap outline <file>     # file symbols, no code
 codemap read-symbol <id>   # one symbol's code (minimal range)
+codemap callers <sym>      # who calls a symbol (resolved edges)
+codemap callees <sym>      # what a symbol calls
+codemap mcp                # MCP server over stdio (for agents)
+codemap install            # write the codemap skill into detected agent hosts
 codemap doctor             # detect-only diagnostics
 ```
 

@@ -7,5 +7,6 @@ pub mod doctor;
 pub mod index;
 pub mod mcp;
 pub mod query;
+pub mod skills;
 pub mod ts;
 pub mod types;

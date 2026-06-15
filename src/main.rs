@@ -71,6 +71,24 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Install the codemap skill into detected agent hosts (writes text files only).
+    Install {
+        /// Restrict to specific hosts (claude, cursor, copilot, agents, kilo). Repeatable.
+        #[arg(long = "target")]
+        targets: Vec<String>,
+        /// Show what would be written without writing.
+        #[arg(long)]
+        list: bool,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Remove the codemap skill from agent hosts.
+    Uninstall {
+        #[arg(long = "target")]
+        targets: Vec<String>,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -88,7 +106,36 @@ fn main() -> Result<()> {
         Command::Callers { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, false),
         Command::Callees { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, true),
         Command::Mcp { root } => cmd_mcp(&root),
+        Command::Install { targets, list, root } => cmd_install(&root, &targets, list),
+        Command::Uninstall { targets, root } => cmd_uninstall(&root, &targets),
     }
+}
+
+fn parse_targets(ids: &[String]) -> Result<Vec<codemap::skills::Target>> {
+    ids.iter()
+        .map(|s| codemap::skills::Target::from_id(s).ok_or_else(|| anyhow::anyhow!("unknown target: {s}")))
+        .collect()
+}
+
+fn cmd_install(root: &Path, targets: &[String], list: bool) -> Result<()> {
+    let only = parse_targets(targets)?;
+    let reports = codemap::skills::install(root, &only, list)?;
+    if reports.is_empty() {
+        println!("codemap: no agent hosts detected (try --target claude|cursor|copilot|agents|kilo)");
+    }
+    for r in &reports {
+        println!("{:9} {:?}  {}", r.target, r.action, r.path);
+    }
+    Ok(())
+}
+
+fn cmd_uninstall(root: &Path, targets: &[String]) -> Result<()> {
+    let only = parse_targets(targets)?;
+    let reports = codemap::skills::uninstall(root, &only)?;
+    for r in &reports {
+        println!("{:9} {:?}  {}", r.target, r.action, r.path);
+    }
+    Ok(())
 }
 
 fn cmd_mcp(root: &Path) -> Result<()> {
