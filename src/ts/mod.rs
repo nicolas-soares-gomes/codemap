@@ -23,6 +23,7 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
         Language::Java => Some(tree_sitter_java::LANGUAGE.into()),
         Language::CSharp => Some(tree_sitter_c_sharp::LANGUAGE.into()),
         Language::Php => Some(tree_sitter_php::LANGUAGE_PHP.into()),
+        Language::C => Some(tree_sitter_c::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -49,6 +50,7 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
         Language::Java => walk_java(tree.root_node(), src, &mut scope, &mut out),
         Language::CSharp => walk_csharp(tree.root_node(), src, &mut scope, &mut out),
         Language::Php => walk_php(tree.root_node(), src, &mut scope, &mut out),
+        Language::C => walk_c(tree.root_node(), src, &mut scope, &mut out),
         _ => {}
     }
     out
@@ -161,6 +163,7 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
         Language::Java => collect_calls_java(tree.root_node(), src, &mut out),
         Language::CSharp => collect_calls_csharp(tree.root_node(), src, &mut out),
         Language::Php => collect_calls_php(tree.root_node(), src, &mut out),
+        Language::C => collect_calls_c(tree.root_node(), src, &mut out),
         _ => {}
     }
     out
@@ -526,6 +529,116 @@ fn push_named_java(node: Node, src: &[u8], scope: &mut Vec<String>, kind: Symbol
         scope.pop();
     } else {
         walk_java(node, src, scope, out);
+    }
+}
+
+// ---- C ---------------------------------------------------------------------
+
+/// Follow the `declarator` field chain (pointer/function/array/parenthesized) to the name.
+fn c_declarator_name<'a, 'n>(n: Node<'n>, src: &'a [u8]) -> Option<(&'a str, Node<'n>)> {
+    match n.kind() {
+        "identifier" | "field_identifier" | "type_identifier" => Some((node_text(n, src), n)),
+        _ => n.child_by_field_name("declarator").and_then(|d| c_declarator_name(d, src)),
+    }
+}
+
+fn walk_c(node: Node, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<Extracted>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "function_definition" => {
+                if let Some(d) = child.child_by_field_name("declarator") {
+                    if let Some((name, nn)) = c_declarator_name(d, src) {
+                        let kind = if scope.is_empty() { SymbolKind::Function } else { SymbolKind::Method };
+                        emit(out, name, scope, kind, child, Some(nn));
+                    }
+                }
+            }
+            "struct_specifier" | "union_specifier" => {
+                if let (Some(nn), Some(body)) = (child.child_by_field_name("name"), child.child_by_field_name("body")) {
+                    let name = node_text(nn, src).to_string();
+                    emit(out, &name, scope, SymbolKind::Struct, child, Some(nn));
+                    scope.push(name);
+                    let mut bc = body.walk();
+                    for f in body.named_children(&mut bc) {
+                        if f.kind() == "field_declaration" {
+                            if let Some(d) = f.child_by_field_name("declarator") {
+                                if let Some((fname, fnn)) = c_declarator_name(d, src) {
+                                    emit(out, fname, scope, SymbolKind::Field, f, Some(fnn));
+                                }
+                            }
+                        }
+                    }
+                    scope.pop();
+                }
+            }
+            "enum_specifier" => {
+                if let Some(body) = child.child_by_field_name("body") {
+                    let pushed = if let Some(nn) = child.child_by_field_name("name") {
+                        let name = node_text(nn, src).to_string();
+                        emit(out, &name, scope, SymbolKind::Enum, child, Some(nn));
+                        scope.push(name);
+                        true
+                    } else {
+                        false
+                    };
+                    let mut bc = body.walk();
+                    for e in body.named_children(&mut bc) {
+                        if e.kind() == "enumerator" {
+                            if let Some(en) = e.child_by_field_name("name").or_else(|| e.named_child(0)) {
+                                emit(out, node_text(en, src), scope, SymbolKind::Variant, e, Some(en));
+                            }
+                        }
+                    }
+                    if pushed {
+                        scope.pop();
+                    }
+                }
+            }
+            "type_definition" => {
+                if let Some(d) = child.child_by_field_name("declarator") {
+                    if let Some((name, nn)) = c_declarator_name(d, src) {
+                        emit(out, name, scope, SymbolKind::TypeAlias, child, Some(nn));
+                    }
+                }
+                walk_c(child, src, scope, out);
+            }
+            "preproc_function_def" | "preproc_def" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    emit(out, node_text(nn, src), scope, SymbolKind::Macro, child, Some(nn));
+                }
+            }
+            _ => walk_c(child, src, scope, out),
+        }
+    }
+}
+
+fn collect_calls_c(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            if let Some(func) = child.child_by_field_name("function") {
+                let name = match func.kind() {
+                    "identifier" => Some(node_text(func, src).to_string()),
+                    "field_expression" => func.child_by_field_name("field").map(|n| node_text(n, src).to_string()),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    let sp = child.start_position();
+                    let ep = child.end_position();
+                    out.push(CallSite {
+                        name,
+                        range: Range {
+                            start_line: sp.row as u32 + 1,
+                            start_col: sp.column as u32,
+                            end_line: ep.row as u32 + 1,
+                            end_col: ep.column as u32,
+                        },
+                    });
+                }
+            }
+        }
+        collect_calls_c(child, src, out);
     }
 }
 
