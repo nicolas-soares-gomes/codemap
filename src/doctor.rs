@@ -50,7 +50,9 @@ pub fn run() -> Result<()> {
         } else {
             format!("{} missing", c.tier2_lsp)
         };
-        println!("  {:<8} {:<6} {:<18} {}", c.lang, "ok", t1, t2);
+        // Kotlin/Clojure have no compatible tree-sitter grammar yet (pre-1.0 / version pin).
+        let t0 = if matches!(c.lang, "kotlin" | "clojure") { "n/a" } else { "ok" };
+        println!("  {:<8} {:<6} {:<18} {}", c.lang, t0, t1, t2);
     }
     if !tips.is_empty() {
         println!("\n  tips for missing Tier1 indexers (run them yourself; codemap never installs):");

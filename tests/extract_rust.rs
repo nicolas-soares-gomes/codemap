@@ -58,6 +58,6 @@ fn ranges_are_one_based_and_sane() {
 
 #[test]
 fn unsupported_language_returns_empty() {
-    // Swift is not in Tier0 yet (lands in M5 behind a feature flag).
-    assert!(ts::extract(Language::Swift, "func main() {}\n").is_empty());
+    // Clojure has no compatible tree-sitter grammar yet (pins an older tree-sitter crate).
+    assert!(ts::extract(Language::Clojure, "(defn main [] 1)\n").is_empty());
 }

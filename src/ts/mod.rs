@@ -25,6 +25,7 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
         Language::Php => Some(tree_sitter_php::LANGUAGE_PHP.into()),
         Language::C => Some(tree_sitter_c::LANGUAGE.into()),
         Language::Cpp => Some(tree_sitter_cpp::LANGUAGE.into()),
+        Language::Swift => Some(tree_sitter_swift::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -52,6 +53,7 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
         Language::CSharp => walk_csharp(tree.root_node(), src, &mut scope, &mut out),
         Language::Php => walk_php(tree.root_node(), src, &mut scope, &mut out),
         Language::C | Language::Cpp => walk_c(tree.root_node(), src, &mut scope, false, &mut out),
+        Language::Swift => walk_swift(tree.root_node(), src, &mut scope, false, &mut out),
         _ => {}
     }
     out
@@ -165,6 +167,7 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
         Language::CSharp => collect_calls_csharp(tree.root_node(), src, &mut out),
         Language::Php => collect_calls_php(tree.root_node(), src, &mut out),
         Language::C | Language::Cpp => collect_calls_c(tree.root_node(), src, &mut out),
+        Language::Swift => collect_calls_swift(tree.root_node(), src, &mut out),
         _ => {}
     }
     out
@@ -212,6 +215,94 @@ fn field_text(n: Node, field: &str, src: &[u8]) -> Option<String> {
 
 fn strip_generics(s: &str) -> String {
     s.split(['<', ' ', '\n']).next().unwrap_or(s).trim_start_matches('&').trim().to_string()
+}
+
+// ---- Swift -----------------------------------------------------------------
+
+fn walk_swift(node: Node, src: &[u8], scope: &mut Vec<String>, in_type: bool, out: &mut Vec<Extracted>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "class_declaration" => {
+                let is_enum = child.child_by_field_name("body").map(|b| b.kind()) == Some("enum_class_body");
+                let kind = if is_enum { SymbolKind::Enum } else { SymbolKind::Class };
+                push_named_swift(child, src, scope, kind, out);
+            }
+            "protocol_declaration" => push_named_swift(child, src, scope, SymbolKind::Interface, out),
+            "enum_entry" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    emit(out, node_text(nn, src), scope, SymbolKind::Variant, child, Some(nn));
+                }
+            }
+            "function_declaration" | "protocol_function_declaration" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    let kind = if in_type { SymbolKind::Method } else { SymbolKind::Function };
+                    emit(out, node_text(nn, src), scope, kind, child, Some(nn));
+                }
+            }
+            "property_declaration" => {
+                if let Some(id) = child.child_by_field_name("name").and_then(|n| first_kind(n, "simple_identifier")) {
+                    emit(out, node_text(id, src), scope, SymbolKind::Field, child, Some(id));
+                }
+            }
+            _ => walk_swift(child, src, scope, in_type, out),
+        }
+    }
+}
+
+fn push_named_swift(node: Node, src: &[u8], scope: &mut Vec<String>, kind: SymbolKind, out: &mut Vec<Extracted>) {
+    if let Some(nn) = node.child_by_field_name("name") {
+        let name = node_text(nn, src).to_string();
+        emit(out, &name, scope, kind, node, Some(nn));
+        scope.push(name);
+        walk_swift(node, src, scope, true, out);
+        scope.pop();
+    } else {
+        walk_swift(node, src, scope, false, out);
+    }
+}
+
+/// First descendant (or self) of the given node kind.
+fn first_kind<'n>(node: Node<'n>, kind: &str) -> Option<Node<'n>> {
+    if node.kind() == kind {
+        return Some(node);
+    }
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if let Some(found) = first_kind(child, kind) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn collect_calls_swift(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            let callee = child.named_child(0).and_then(|f| match f.kind() {
+                "simple_identifier" => Some(node_text(f, src).to_string()),
+                "navigation_expression" => first_kind(f, "navigation_suffix")
+                    .and_then(|s| first_kind(s, "simple_identifier"))
+                    .map(|n| node_text(n, src).to_string()),
+                _ => None,
+            });
+            if let Some(name) = callee {
+                let sp = child.start_position();
+                let ep = child.end_position();
+                out.push(CallSite {
+                    name,
+                    range: Range {
+                        start_line: sp.row as u32 + 1,
+                        start_col: sp.column as u32,
+                        end_line: ep.row as u32 + 1,
+                        end_col: ep.column as u32,
+                    },
+                });
+            }
+        }
+        collect_calls_swift(child, src, out);
+    }
 }
 
 // ---- TypeScript ------------------------------------------------------------
