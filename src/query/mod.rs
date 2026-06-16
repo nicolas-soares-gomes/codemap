@@ -2,7 +2,7 @@
 //! callers/callees and inline staleness guard land in M2/M4.
 
 use crate::db::{line_index, Db};
-use crate::types::{Provenance, Resolution, SymbolKind};
+use crate::types::{Provenance, Resolution, Role, SymbolKind};
 use anyhow::{anyhow, Result};
 use rusqlite::OptionalExtension;
 use std::path::Path;
@@ -278,6 +278,126 @@ pub fn subgraph(db: &Db, root_id: i64, depth: i64, forward: bool) -> Result<Subg
         nodes,
         edges,
     })
+}
+
+/// Transitive callers — what breaks if this symbol changes.
+pub fn impact(db: &Db, root_id: i64, max_depth: i64, limit: i64) -> Result<Vec<EdgeHit>> {
+    callers(db, root_id, max_depth, limit)
+}
+
+/// Reachable ancestors that are roots (no incoming call edges) — the entrypoints.
+pub fn trace_to_roots(db: &Db, root_id: i64, max_depth: i64, limit: i64) -> Result<Vec<EdgeHit>> {
+    let ancestors = callers(db, root_id, max_depth, 1000)?;
+    let mut has_caller = db
+        .conn
+        .prepare("SELECT 1 FROM edge WHERE target_symbol_id=?1 AND kind=1 LIMIT 1")?;
+    let mut roots = Vec::new();
+    for a in ancestors {
+        if has_caller
+            .query_row([a.id], |_| Ok(()))
+            .optional()?
+            .is_none()
+        {
+            roots.push(a);
+        }
+        if roots.len() as i64 >= limit {
+            break;
+        }
+    }
+    Ok(roots)
+}
+
+/// A reference occurrence: the enclosing symbol and location where a target symbol is used.
+#[derive(Debug, Clone)]
+pub struct RefHit {
+    pub enclosing: Option<String>,
+    pub file: String,
+    pub line: u32,
+    pub role: Option<Role>,
+}
+
+pub fn references(db: &Db, symbol_id: i64, limit: i64) -> Result<Vec<RefHit>> {
+    let mut stmt = db.conn.prepare(
+        "SELECT np.text, fp.text, o.start_line, o.role
+         FROM occurrence o
+         JOIN file f          ON f.id = o.file_id
+         JOIN string_pool fp  ON fp.id = f.path_sid
+         LEFT JOIN symbol enc ON enc.id = o.enclosing_id
+         LEFT JOIN string_pool np ON np.id = enc.name_path_sid
+         WHERE o.symbol_id = ?1
+         ORDER BY fp.text, o.start_line
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![symbol_id, limit], |r| {
+            Ok(RefHit {
+                enclosing: r.get::<_, Option<String>>(0)?,
+                file: r.get(1)?,
+                line: r.get(2)?,
+                role: Role::from_i64(r.get(3)?),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Fields/consts/variables declared under a scope name_path.
+pub fn variables(db: &Db, scope: &str, limit: i64) -> Result<Vec<Hit>> {
+    let prefix = format!("{scope}/");
+    let mut stmt = db.conn.prepare(
+        "SELECT s.id, np.text, fp.text, s.start_line, s.kind
+         FROM symbol s
+         JOIN string_pool np ON np.id = s.name_path_sid
+         JOIN file f         ON f.id  = s.file_id
+         JOIN string_pool fp ON fp.id = f.path_sid
+         WHERE np.text LIKE ?1 || '%' AND s.kind IN (?2, ?3, ?4)
+         ORDER BY s.start_line
+         LIMIT ?5",
+    )?;
+    let hits = stmt
+        .query_map(
+            rusqlite::params![
+                prefix,
+                SymbolKind::Field.as_i64(),
+                SymbolKind::Variable.as_i64(),
+                SymbolKind::Const.as_i64(),
+                limit
+            ],
+            row_to_hit,
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(hits)
+}
+
+/// Search symbols by name via the contentless FTS5 index (prefix match, case-insensitive).
+/// mode=symbol|text both query the name index (we don't index code); semantic is unavailable.
+pub fn search(db: &Db, query: &str, mode: &str, limit: i64) -> Result<Vec<Hit>> {
+    if mode == "semantic" {
+        return Err(anyhow!(
+            "semantic search is not available (opt-in sqlite-vec, not built) — use mode=symbol or text"
+        ));
+    }
+    let term: String = query
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if term.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = db.conn.prepare(
+        "SELECT s.id, np.text, fp.text, s.start_line, s.kind
+         FROM symbol_fts
+         JOIN symbol s       ON s.id  = symbol_fts.rowid
+         JOIN string_pool np ON np.id = s.name_path_sid
+         JOIN file f         ON f.id  = s.file_id
+         JOIN string_pool fp ON fp.id = f.path_sid
+         WHERE symbol_fts MATCH ?1
+         LIMIT ?2",
+    )?;
+    let hits = stmt
+        .query_map(rusqlite::params![format!("{term}*"), limit], row_to_hit)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(hits)
 }
 
 fn row_to_hit(r: &rusqlite::Row) -> rusqlite::Result<Hit> {

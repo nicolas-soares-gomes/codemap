@@ -2,7 +2,7 @@
 //! tools return compact, code-free rows; read_symbol is the only tool that returns code.
 
 use crate::db::Db;
-use crate::query::{self, Code, EdgeHit, Hit};
+use crate::query::{self, Code, EdgeHit, Hit, RefHit};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use serde::Deserialize;
@@ -37,6 +37,21 @@ pub struct EdgesArgs {
     /// `sym:N`, a name, or a name_path.
     pub symbol: String,
     pub depth: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchArgs {
+    pub query: String,
+    /// symbol (default) | text | semantic.
+    pub mode: Option<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScopeArgs {
+    /// A name_path (`Type` or `Type/method`) or repo-relative file path.
+    pub scope: String,
     pub limit: Option<i64>,
 }
 
@@ -91,6 +106,72 @@ impl CodemapServer {
         let db = self.db()?;
         let hits = query::outline(&db, &a.file).map_err(e)?;
         Ok(proj_hits(&format!("outline {}", a.file), &hits))
+    }
+
+    #[tool(
+        name = "codemap_search_code",
+        description = "Search symbols by name (FTS5 prefix, case-insensitive). USE INSTEAD OF grepping a name: indexed, deduped, returns chainable ids. mode=symbol (default)|text; semantic is unavailable. No code."
+    )]
+    fn search_code(&self, Parameters(a): Parameters<SearchArgs>) -> Result<String, String> {
+        let db = self.db()?;
+        let hits = query::search(
+            &db,
+            &a.query,
+            a.mode.as_deref().unwrap_or("symbol"),
+            a.limit.unwrap_or(30),
+        )
+        .map_err(e)?;
+        Ok(proj_hits(&format!("search \"{}\"", a.query), &hits))
+    }
+
+    #[tool(
+        name = "codemap_impact",
+        description = "Transitive callers of a symbol — what BREAKS if you change it. Use BEFORE editing. Resolved edges, no code, with prov/res and depth."
+    )]
+    fn impact(&self, Parameters(a): Parameters<EdgesArgs>) -> Result<String, String> {
+        let db = self.db()?;
+        let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
+        let hits =
+            query::impact(&db, id, a.depth.unwrap_or(4), a.limit.unwrap_or(80)).map_err(e)?;
+        Ok(proj_edges("impact", id, a.depth.unwrap_or(4), &hits))
+    }
+
+    #[tool(
+        name = "codemap_trace_to_roots",
+        description = "Trace the call chain upward from a symbol to ROOT entrypoints (functions with no callers). Resolved edges, no code."
+    )]
+    fn trace_to_roots(&self, Parameters(a): Parameters<EdgesArgs>) -> Result<String, String> {
+        let db = self.db()?;
+        let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
+        let hits = query::trace_to_roots(&db, id, a.depth.unwrap_or(6), a.limit.unwrap_or(40))
+            .map_err(e)?;
+        Ok(proj_edges(
+            "roots reaching",
+            id,
+            a.depth.unwrap_or(6),
+            &hits,
+        ))
+    }
+
+    #[tool(
+        name = "codemap_get_references",
+        description = "Where a symbol is REFERENCED, resolved to the enclosing symbol (not raw text lines). USE INSTEAD OF grep. No code."
+    )]
+    fn get_references(&self, Parameters(a): Parameters<SymbolArgs>) -> Result<String, String> {
+        let db = self.db()?;
+        let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
+        let refs = query::references(&db, id, 100).map_err(e)?;
+        Ok(proj_refs(id, &refs))
+    }
+
+    #[tool(
+        name = "codemap_get_variables",
+        description = "Fields/consts declared in a type or module scope (a name_path). No code. Use INSTEAD OF reading the file to find members."
+    )]
+    fn get_variables(&self, Parameters(a): Parameters<ScopeArgs>) -> Result<String, String> {
+        let db = self.db()?;
+        let hits = query::variables(&db, &a.scope, a.limit.unwrap_or(100)).map_err(e)?;
+        Ok(proj_hits(&format!("variables in {}", a.scope), &hits))
     }
 
     fn db(&self) -> Result<Db, String> {
@@ -183,6 +264,22 @@ fn proj_edges(label: &str, root_id: i64, depth: i64, hits: &[EdgeHit]) -> String
         ));
     }
     s.push_str("# next: read_symbol(id) for code\n");
+    s
+}
+
+fn proj_refs(id: i64, refs: &[RefHit]) -> String {
+    let mut s = format!(
+        "# references to sym:{id}  ({} shown)\n# fields: in_symbol | file:line | role\n",
+        refs.len()
+    );
+    for r in refs {
+        let enc = r.enclosing.as_deref().unwrap_or("(top-level)");
+        let role = r
+            .role
+            .map(|x| format!("{x:?}").to_lowercase())
+            .unwrap_or_else(|| "?".into());
+        s.push_str(&format!("{enc} | {}:{} | {role}\n", r.file, r.line));
+    }
     s
 }
 

@@ -53,6 +53,16 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Search symbols by name (FTS5). mode = symbol|text|semantic.
+    Search {
+        query: String,
+        #[arg(long, default_value = "symbol")]
+        mode: String,
+        #[arg(long, default_value_t = 30)]
+        limit: i64,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Read one symbol's code (minimal range). Accepts `sym:N` or `N`.
     ReadSymbol {
         id: String,
@@ -75,6 +85,42 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         depth: i64,
         #[arg(long, default_value_t = 50)]
+        limit: i64,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Transitive callers — what breaks if you change a symbol.
+    Impact {
+        symbol: String,
+        #[arg(long, default_value_t = 4)]
+        depth: i64,
+        #[arg(long, default_value_t = 80)]
+        limit: i64,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Trace the call chain up to root entrypoints.
+    Trace {
+        symbol: String,
+        #[arg(long = "max-depth", default_value_t = 6)]
+        max_depth: i64,
+        #[arg(long, default_value_t = 40)]
+        limit: i64,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Where a symbol is referenced (resolved to the enclosing symbol).
+    Refs {
+        symbol: String,
+        #[arg(long, default_value_t = 100)]
+        limit: i64,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Fields/consts/variables declared under a scope (name_path).
+    Variables {
+        scope: String,
+        #[arg(long, default_value_t = 100)]
         limit: i64,
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -143,6 +189,12 @@ fn main() -> Result<()> {
         } => cmd_index(&path, incremental, tier1, scip),
         Command::Resolve { query, limit, root } => cmd_resolve(&root, &query, limit),
         Command::Outline { file, root } => cmd_outline(&root, &file),
+        Command::Search {
+            query,
+            mode,
+            limit,
+            root,
+        } => cmd_search(&root, &query, &mode, limit),
         Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
         Command::Callers {
             symbol,
@@ -156,6 +208,24 @@ fn main() -> Result<()> {
             limit,
             root,
         } => cmd_edges(&root, &symbol, depth, limit, true),
+        Command::Impact {
+            symbol,
+            depth,
+            limit,
+            root,
+        } => cmd_impact(&root, &symbol, depth, limit),
+        Command::Trace {
+            symbol,
+            max_depth,
+            limit,
+            root,
+        } => cmd_trace(&root, &symbol, max_depth, limit),
+        Command::Refs {
+            symbol,
+            limit,
+            root,
+        } => cmd_refs(&root, &symbol, limit),
+        Command::Variables { scope, limit, root } => cmd_variables(&root, &scope, limit),
         Command::Export {
             symbol,
             format,
@@ -324,6 +394,27 @@ fn cmd_resolve(root: &Path, query: &str, limit: i64) -> Result<()> {
     Ok(())
 }
 
+fn cmd_search(root: &Path, query: &str, mode: &str, limit: i64) -> Result<()> {
+    let db = open_existing(root)?;
+    let hits = query::search(&db, query, mode, limit)?;
+    println!(
+        "# search \"{query}\"  (mode={mode}, {} matches)",
+        hits.len()
+    );
+    println!("# fields: id | name_path | file:line | kind");
+    for h in &hits {
+        println!(
+            "sym:{} | {} | {}:{} | {}",
+            h.id,
+            h.name_path,
+            h.file,
+            h.line,
+            kind_label(h.kind)
+        );
+    }
+    Ok(())
+}
+
 fn cmd_outline(root: &Path, file: &str) -> Result<()> {
     let db = open_existing(root)?;
     let hits = query::outline(&db, file)?;
@@ -363,13 +454,65 @@ fn cmd_edges(root: &Path, symbol: &str, depth: i64, limit: i64, forward: bool) -
     } else {
         query::callers(&db, id, depth, limit)?
     };
-    let label = if forward { "callees" } else { "callers" };
-    println!(
-        "# {label} of sym:{id}  (depth<={depth}, {} shown)",
-        hits.len()
-    );
-    println!("# fields: id | name_path | file:line | kind | depth | prov/res");
+    print_edges(if forward { "callees of" } else { "callers of" }, id, &hits);
+    Ok(())
+}
+
+fn cmd_impact(root: &Path, symbol: &str, depth: i64, limit: i64) -> Result<()> {
+    let db = open_existing(root)?;
+    let id = query::resolve_arg(&db, symbol)?;
+    let hits = query::impact(&db, id, depth, limit)?;
+    print_edges("impact of", id, &hits);
+    Ok(())
+}
+
+fn cmd_trace(root: &Path, symbol: &str, max_depth: i64, limit: i64) -> Result<()> {
+    let db = open_existing(root)?;
+    let id = query::resolve_arg(&db, symbol)?;
+    let hits = query::trace_to_roots(&db, id, max_depth, limit)?;
+    print_edges("roots reaching", id, &hits);
+    Ok(())
+}
+
+fn cmd_refs(root: &Path, symbol: &str, limit: i64) -> Result<()> {
+    let db = open_existing(root)?;
+    let id = query::resolve_arg(&db, symbol)?;
+    let refs = query::references(&db, id, limit)?;
+    println!("# references to sym:{id}  ({} shown)", refs.len());
+    println!("# fields: in_symbol | file:line | role");
+    for r in &refs {
+        let enc = r.enclosing.as_deref().unwrap_or("(top-level)");
+        let role = r
+            .role
+            .map(|x| format!("{x:?}").to_lowercase())
+            .unwrap_or_else(|| "?".into());
+        println!("{enc} | {}:{} | {role}", r.file, r.line);
+    }
+    Ok(())
+}
+
+fn cmd_variables(root: &Path, scope: &str, limit: i64) -> Result<()> {
+    let db = open_existing(root)?;
+    let hits = query::variables(&db, scope, limit)?;
+    println!("# variables in {scope}  ({} shown)", hits.len());
+    println!("# fields: id | name_path | file:line | kind");
     for h in &hits {
+        println!(
+            "sym:{} | {} | {}:{} | {}",
+            h.id,
+            h.name_path,
+            h.file,
+            h.line,
+            kind_label(h.kind)
+        );
+    }
+    Ok(())
+}
+
+fn print_edges(label: &str, id: i64, hits: &[query::EdgeHit]) {
+    println!("# {label} sym:{id}  ({} shown)", hits.len());
+    println!("# fields: id | name_path | file:line | kind | depth | prov/res");
+    for h in hits {
         let pr = match (h.provenance, h.resolution) {
             (Some(p), Some(r)) => format!("{}/{}", p.abbrev(), r.abbrev()),
             _ => "-".into(),
@@ -385,7 +528,6 @@ fn cmd_edges(root: &Path, symbol: &str, depth: i64, limit: i64, forward: bool) -
             pr
         );
     }
-    Ok(())
 }
 
 fn kind_label(k: Option<SymbolKind>) -> String {
