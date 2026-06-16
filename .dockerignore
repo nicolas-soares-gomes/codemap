@@ -1,0 +1,6 @@
+target
+.git
+.codemap
+*.db
+*.db-wal
+*.db-shm
