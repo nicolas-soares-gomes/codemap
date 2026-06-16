@@ -17,7 +17,8 @@ Work in progress.
 - **M4 — Incremental / watcher** ✅: git-hook-driven & manual incremental reconcile, toggleable watcher, inline staleness guard.
 - **M5 — Export / Docker / languages** 🚧: DOT/Mermaid export ✅, static musl Docker image (scratch, ~15 MB) ✅, git-hooks installer ✅; more languages ongoing.
 
-Tier0 languages: **Rust, TypeScript, Python, Go** (the cheap-SCIP set). More land incrementally.
+Tier0 languages: **Rust, TypeScript, Python, Go, Java, C#, PHP, C, C++** (each with a per-language
+extraction test). Kotlin, Swift, and Clojure are pending (pre-1.0 / variable grammars).
 
 ## Architecture
 
