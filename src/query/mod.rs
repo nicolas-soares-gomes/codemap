@@ -443,3 +443,147 @@ fn row_to_hit(r: &rusqlite::Row) -> rusqlite::Result<Hit> {
         kind: SymbolKind::from_i64(r.get(4)?),
     })
 }
+
+const GREP_MAX_FILE: usize = 2 * 1024 * 1024;
+const GREP_LINE_CAP: usize = 200;
+
+/// An indexed symbol's span for enclosing-symbol lookup: (id, name_path, start_line, end_line).
+type SymRange = (i64, String, u32, u32);
+
+/// A content match: the file/line, the matched line (trimmed/truncated), and the enclosing
+/// symbol if the file is indexed (None for non-source files like config — same as plain grep).
+#[derive(Debug)]
+pub struct GrepHit {
+    pub file: String,
+    pub line: u32,
+    pub text: String,
+    pub enclosing: Option<(i64, String)>, // (symbol id, name_path)
+}
+
+/// Regex search of file CONTENTS across the repo (honoring .gitignore/.codemapignore), with each
+/// hit mapped to the innermost symbol whose range contains it. Unlike symbol search, this reads
+/// the files — so it finds values inside strings/consts/config, and bridges grep to the graph.
+pub fn grep(
+    db: &Db,
+    root: &Path,
+    pattern: &str,
+    ignore_case: bool,
+    limit: i64,
+) -> Result<Vec<GrepHit>> {
+    use ignore::WalkBuilder;
+    let re = regex::RegexBuilder::new(pattern)
+        .case_insensitive(ignore_case)
+        .build()
+        .map_err(|e| anyhow!("invalid regex: {e}"))?;
+
+    // Cache per file: the indexed symbols (id, name_path, start, end), or None if not indexed.
+    let mut sym_cache: std::collections::HashMap<String, Option<Vec<SymRange>>> =
+        std::collections::HashMap::new();
+    let mut hits = Vec::new();
+
+    for entry in WalkBuilder::new(root)
+        .add_custom_ignore_filename(".codemapignore")
+        .hidden(false) // search dotfiles like .env.example, where config values live
+        .filter_entry(|e| {
+            let n = e.file_name();
+            n != ".git" && n != ".codemap" // but never descend into these
+        })
+        .build()
+        .flatten()
+    {
+        if hits.len() as i64 >= limit {
+            break;
+        }
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if bytes.len() > GREP_MAX_FILE || bytes.iter().take(8192).any(|b| *b == 0) {
+            continue; // too big or binary
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = String::from_utf8_lossy(&bytes);
+        let mut matched_lines: Vec<(u32, &str)> = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            if re.is_match(line) {
+                matched_lines.push((i as u32 + 1, line));
+                if hits.len() + matched_lines.len() >= limit as usize {
+                    break;
+                }
+            }
+        }
+        if matched_lines.is_empty() {
+            continue;
+        }
+        let symbols = sym_cache
+            .entry(rel.clone())
+            .or_insert_with(|| symbols_for_file(db, &rel).ok().flatten());
+        for (line_no, line) in matched_lines {
+            let enclosing = symbols
+                .as_ref()
+                .and_then(|syms| innermost_symbol(syms, line_no));
+            hits.push(GrepHit {
+                file: rel.clone(),
+                line: line_no,
+                text: truncate_line(line),
+                enclosing,
+            });
+            if hits.len() as i64 >= limit {
+                break;
+            }
+        }
+    }
+    Ok(hits)
+}
+
+fn truncate_line(line: &str) -> String {
+    let t = line.trim();
+    if t.chars().count() > GREP_LINE_CAP {
+        let cut: String = t.chars().take(GREP_LINE_CAP).collect();
+        format!("{cut}…")
+    } else {
+        t.to_string()
+    }
+}
+
+/// Indexed symbols of a file as (id, name_path, start_line, end_line), or None if not indexed.
+fn symbols_for_file(db: &Db, rel: &str) -> Result<Option<Vec<SymRange>>> {
+    let file_id: Option<i64> = db
+        .conn
+        .query_row(
+            "SELECT f.id FROM file f JOIN string_pool s ON s.id=f.path_sid WHERE s.text=?1",
+            [rel],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(file_id) = file_id else {
+        return Ok(None);
+    };
+    let mut stmt = db.conn.prepare(
+        "SELECT s.id, np.text, s.start_line, s.end_line
+         FROM symbol s JOIN string_pool np ON np.id=s.name_path_sid
+         WHERE s.file_id=?1",
+    )?;
+    let rows = stmt
+        .query_map([file_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(Some(rows))
+}
+
+/// Innermost symbol (smallest range) whose [start,end] contains `line`.
+fn innermost_symbol(syms: &[SymRange], line: u32) -> Option<(i64, String)> {
+    syms.iter()
+        .filter(|(_, _, s, e)| *s <= line && line <= *e)
+        .min_by_key(|(_, _, s, e)| e - s)
+        .map(|(id, np, _, _)| (*id, np.clone()))
+}

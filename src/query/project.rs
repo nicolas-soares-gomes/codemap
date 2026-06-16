@@ -118,6 +118,29 @@ pub fn search(db: &Db, query: &str, mode: &str, limit: i64) -> Result<String> {
     ))
 }
 
+/// Regex content search, each hit annotated with its enclosing symbol (bridges grep to the graph).
+pub fn grep(db: &Db, root: &Path, pattern: &str, ignore_case: bool, limit: i64) -> Result<String> {
+    let (hits, cut) = capped(
+        super::grep(db, root, pattern, ignore_case, limit + 1)?,
+        limit,
+    );
+    Ok(assemble(
+        &format!("grep /{pattern}/"),
+        "file:line | in (sym) | match",
+        hits.iter().map(grep_row).collect(),
+        cut,
+        "codemap read-symbol <id> | codemap callers <id> (for the enclosing symbol)",
+    ))
+}
+
+fn grep_row(h: &super::GrepHit) -> String {
+    let sym = match &h.enclosing {
+        Some((id, np)) => format!("sym:{id} {np}"),
+        None => "-".to_string(),
+    };
+    format!("{}:{} | {} | {}", h.file, h.line, sym, h.text)
+}
+
 pub fn outline(db: &Db, file: &str) -> Result<String> {
     let hits = super::outline(db, file)?;
     Ok(assemble(

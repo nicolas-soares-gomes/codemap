@@ -183,6 +183,7 @@ dependencies = [
  "notify",
  "notify-debouncer-full",
  "protobuf",
+ "regex",
  "rusqlite",
  "scip",
  "serde",

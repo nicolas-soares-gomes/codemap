@@ -6,6 +6,9 @@ these in your shell.
    - codemap resolve <name>      exact name or Type/method -> stable ids
    - codemap search <query>      name prefix search -> ids (add --mode text for a substring,
                                  e.g. `codemap search inch --mode text` finds OneinchClient)
+   - codemap grep <regex>        search file CONTENTS for a value/string/regex (e.g. a URL, an
+                                 env key, a magic constant); each hit is mapped to its enclosing
+                                 symbol. Use this instead of shell grep — it bridges to the graph.
    - codemap outline <file>      a file's symbols, instead of reading the file
 
 2. Understand relations (no code; each edge is tagged prov/res):

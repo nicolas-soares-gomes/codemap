@@ -59,6 +59,7 @@ cheap→expensive ladder; every command returns compact, code-free rows except `
 ```
 codemap resolve <name>      # exact name / Type.method -> stable ids
 codemap search <query>      # name prefix search -> ids (--mode text for a substring match)
+codemap grep <regex>        # search file CONTENTS for a value/string/regex, mapped to its symbol
 codemap outline <file>      # a file's symbols, instead of reading it
 codemap callers <sym>       # who calls it
 codemap callees <sym>       # what it calls

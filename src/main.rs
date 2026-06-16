@@ -90,6 +90,17 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Regex search of file CONTENTS (values, strings, config), each hit mapped to its symbol.
+    Grep {
+        pattern: String,
+        /// Case-insensitive match.
+        #[arg(long, short = 'i')]
+        ignore_case: bool,
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Read one symbol's code (minimal range). Accepts `sym:N` or `N`.
     ReadSymbol {
         id: String,
@@ -241,6 +252,12 @@ fn main() -> Result<()> {
             limit,
             root,
         } => cmd_search(&root, &query, &mode, limit),
+        Command::Grep {
+            pattern,
+            ignore_case,
+            limit,
+            root,
+        } => cmd_grep(&root, &pattern, ignore_case, limit),
         Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
         Command::Callers {
             symbol,
@@ -610,6 +627,12 @@ fn cmd_resolve(root: &Path, query: &str, limit: i64) -> Result<()> {
 fn cmd_search(root: &Path, query: &str, mode: &str, limit: i64) -> Result<()> {
     let db = open_existing(root)?;
     print!("{}", project::search(&db, query, mode, limit)?);
+    Ok(())
+}
+
+fn cmd_grep(root: &Path, pattern: &str, ignore_case: bool, limit: i64) -> Result<()> {
+    let db = open_existing(root)?;
+    print!("{}", project::grep(&db, root, pattern, ignore_case, limit)?);
     Ok(())
 }
 
