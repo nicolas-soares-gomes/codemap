@@ -28,6 +28,7 @@ pub fn detect_lang(path: &Path) -> Option<Language> {
         Some("py" | "pyi") => Some(Language::Python),
         Some("go") => Some(Language::Go),
         Some("java") => Some(Language::Java),
+        Some("cs") => Some(Language::CSharp),
         _ => None,
     }
 }
