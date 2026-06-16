@@ -11,9 +11,12 @@ Two steps: install the binary, then run `setup` in your repo.
 
 ```sh
 # 1. install (pick one)
-brew install codemap        # coming soon
-curl ... | sh               # coming soon
-cargo install --path .      # from source, today
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/nicolas-soares-gomes/codemap/releases/latest/download/codemap-installer.sh | sh   # macOS / Linux
+brew install nicolas-soares-gomes/tap/codemap                                                                                            # Homebrew
+cargo install --git https://github.com/nicolas-soares-gomes/codemap                                                                      # from source
+
+# Windows (PowerShell):
+#   irm https://github.com/nicolas-soares-gomes/codemap/releases/latest/download/codemap-installer.ps1 | iex
 
 # 2. in your project
 cd my-project
@@ -82,6 +85,16 @@ codemap status | doctor | prune | reset | watch
 
 - `--features tier2-lsp` → `codemap lsp-enrich <symbol>` (confirm a symbol's edges via a
   user-installed language server; codemap never installs it).
+
+## Contributing
+
+```sh
+brew install lefthook   # or: npm i -g lefthook / go install / mise install
+lefthook install        # wires the git hooks
+```
+
+`lefthook` runs `cargo fmt --check` + `cargo clippy -D warnings` on commit and `cargo test` on push
+(see `lefthook.yml`). Bypass a hook with `git commit --no-verify`. CI runs the same checks.
 
 ## License
 

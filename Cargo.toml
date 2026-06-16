@@ -1,10 +1,13 @@
 [package]
 name = "codemap"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
 description = "Deterministic code index for AI agents — token-cheap symbol-level navigation"
 license = "MIT"
+repository = "https://github.com/nicolas-soares-gomes/codemap"
+homepage = "https://github.com/nicolas-soares-gomes/codemap"
+readme = "README.md"
 
 build = "build.rs"
 
@@ -59,3 +62,8 @@ tempfile = "3"
 [profile.release]
 lto = "thin"
 strip = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
