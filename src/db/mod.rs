@@ -1,7 +1,7 @@
 //! Storage layer: open SQLite, apply pragmas, run migrations, low-level traversal.
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 
 pub mod line_index;
@@ -72,6 +72,13 @@ impl Db {
             rusqlite::params![key, value],
         )?;
         Ok(())
+    }
+
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))
+            .optional()?)
     }
 
     /// Forward traversal (callees): cycle-safe recursive CTE with depth cap and total limit.

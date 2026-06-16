@@ -10,6 +10,7 @@ use ignore::WalkBuilder;
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_FILE: usize = 2 * 1024 * 1024;
@@ -322,6 +323,11 @@ pub struct ReconcileStats {
 /// re-resolving calls for changed/added files. Cross-file call edges to newly-added symbols
 /// may require a full `index` to appear (resolve_calls runs per changed file here).
 pub fn reconcile(db: &mut Db, root: &Path) -> Result<ReconcileStats> {
+    // Fast path: if this is a git repo with a known indexed_commit, ask git for the exact
+    // changed set in O(changes) instead of walking the whole tree.
+    if let Some(stats) = try_git_reconcile(db, root)? {
+        return Ok(stats);
+    }
     let snapshot = file_snapshot(db)?;
     let mut seen: HashSet<String> = HashSet::new();
     let mut changed_files: Vec<String> = Vec::new();
@@ -394,8 +400,142 @@ pub fn reconcile(db: &mut Db, root: &Path) -> Result<ReconcileStats> {
     for rel in &changed_files {
         resolve_calls_file(db, root, rel)?;
     }
-    db.set_meta("scanner_mode", "fs")?;
+    // Seed indexed_commit so the next reconcile can take the git fast-path.
+    if let Some(head) = git_head(root) {
+        db.set_meta("indexed_commit", &head)?;
+        db.set_meta("scanner_mode", "git-seeded")?;
+    } else {
+        db.set_meta("scanner_mode", "fs")?;
+    }
     Ok(stats)
+}
+
+/// Incremental reconcile using git's diff between the indexed commit and HEAD plus the working
+/// tree status. Returns None (→ fall back to the fs walk) when not a git repo, no indexed_commit
+/// yet, or the indexed commit is unreachable (shallow/rebased/gc'd).
+fn try_git_reconcile(db: &mut Db, root: &Path) -> Result<Option<ReconcileStats>> {
+    if !root.join(".git").exists() {
+        return Ok(None);
+    }
+    let Some(indexed) = db.get_meta("indexed_commit")? else {
+        return Ok(None);
+    };
+    let Some(head) = git_head(root) else {
+        return Ok(None);
+    };
+    if !git_commit_exists(root, &indexed) {
+        return Ok(None);
+    }
+
+    let mut changed: HashSet<String> = HashSet::new();
+    let mut deleted: HashSet<String> = HashSet::new();
+
+    // Committed changes between the indexed commit and HEAD.
+    if indexed != head {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["diff", "--name-status", &indexed, &head])
+            .output()?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut it = line.split('\t');
+            let Some(status) = it.next() else { continue };
+            let paths: Vec<&str> = it.collect();
+            match (status.chars().next(), paths.as_slice()) {
+                (Some('D'), [p]) => {
+                    deleted.insert((*p).to_string());
+                }
+                (Some('R') | Some('C'), [old, new]) => {
+                    deleted.insert((*old).to_string());
+                    changed.insert((*new).to_string());
+                }
+                (_, [p]) => {
+                    changed.insert((*p).to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Working tree + staged + untracked (porcelain respects .gitignore).
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain"])
+        .output()?;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if line.len() < 3 {
+            continue;
+        }
+        let xy = &line[..2];
+        let rest = line[3..].trim();
+        if let Some((orig, dest)) = rest.split_once(" -> ") {
+            deleted.insert(unquote(orig));
+            changed.insert(unquote(dest));
+        } else if xy.contains('D') {
+            deleted.insert(unquote(rest));
+        } else {
+            changed.insert(unquote(rest));
+        }
+    }
+
+    let mut stats = ReconcileStats::default();
+    let mut touched: Vec<String> = Vec::new();
+    for rel in &deleted {
+        if !changed.contains(rel) {
+            let tx = db.conn.transaction()?;
+            writer::prune_file(&tx, rel)?;
+            tx.commit()?;
+            stats.deleted += 1;
+        }
+    }
+    for rel in &changed {
+        if detect_lang(&root.join(rel)).is_some() {
+            reindex_file(db, root, rel)?;
+            touched.push(rel.clone());
+            stats.changed += 1;
+        }
+    }
+    for rel in &touched {
+        resolve_calls_file(db, root, rel)?;
+    }
+
+    db.set_meta("indexed_commit", &head)?;
+    db.set_meta("scanner_mode", "git")?;
+    Ok(Some(stats))
+}
+
+fn git_head(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+fn git_commit_exists(root: &Path, sha: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "-e", &format!("{sha}^{{commit}}")])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Strip git's surrounding quotes from a path with special characters.
+fn unquote(s: &str) -> String {
+    let s = s.trim();
+    s.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(s)
+        .to_string()
 }
 
 /// path -> (mtime_ns, size, content_hash)
