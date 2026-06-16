@@ -204,6 +204,88 @@ fn strip_section(existing: &str) -> String {
     }
 }
 
+const HOOK_BEGIN: &str = "# >>> codemap-hook >>>";
+const HOOK_END: &str = "# <<< codemap-hook <<<";
+const HOOK_NAMES: &[&str] = &["post-commit", "post-merge", "post-checkout"];
+
+/// Install opt-in git hooks that run `codemap index --incremental` after commit/merge/checkout.
+pub fn install_hooks(root: &Path) -> Result<Vec<Report>> {
+    if !root.join(".git").exists() {
+        return Ok(vec![Report { target: "git-hooks", path: disp(&root.join(".git")), action: Action::Skipped("no .git".into()) }]);
+    }
+    let hooks_dir = root.join(".git/hooks");
+    std::fs::create_dir_all(&hooks_dir)?;
+    let block = format!(
+        "{HOOK_BEGIN}\ncommand -v codemap >/dev/null 2>&1 && codemap index --incremental >/dev/null 2>&1 || true\n{HOOK_END}"
+    );
+    let mut reports = Vec::new();
+    for name in HOOK_NAMES {
+        let path = hooks_dir.join(name);
+        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let existed = !existing.is_empty();
+        let content = if existing.contains(HOOK_BEGIN) {
+            replace_block(&existing, &block)
+        } else if existing.trim().is_empty() {
+            format!("#!/bin/sh\n{block}\n")
+        } else {
+            format!("{}\n{block}\n", existing.trim_end())
+        };
+        std::fs::write(&path, content)?;
+        set_exec(&path)?;
+        reports.push(Report { target: "git-hooks", path: disp(&path), action: if existed { Action::Updated } else { Action::Written } });
+    }
+    Ok(reports)
+}
+
+pub fn uninstall_hooks(root: &Path) -> Result<Vec<Report>> {
+    let hooks_dir = root.join(".git/hooks");
+    let mut reports = Vec::new();
+    for name in HOOK_NAMES {
+        let path = hooks_dir.join(name);
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if existing.contains(HOOK_BEGIN) {
+            std::fs::write(&path, strip_block(&existing))?;
+            reports.push(Report { target: "git-hooks", path: disp(&path), action: Action::Removed });
+        }
+    }
+    Ok(reports)
+}
+
+fn replace_block(existing: &str, block: &str) -> String {
+    if let (Some(b), Some(e)) = (existing.find(HOOK_BEGIN), existing.find(HOOK_END)) {
+        format!("{}{}{}", &existing[..b], block, &existing[e + HOOK_END.len()..])
+    } else {
+        existing.to_string()
+    }
+}
+
+fn strip_block(existing: &str) -> String {
+    if let (Some(b), Some(e)) = (existing.find(HOOK_BEGIN), existing.find(HOOK_END)) {
+        let head = existing[..b].trim_end();
+        let tail = existing[e + HOOK_END.len()..].trim_start();
+        format!("{head}\n{tail}").trim().to_string() + "\n"
+    } else {
+        existing.to_string()
+    }
+}
+
+#[cfg(unix)]
+fn set_exec(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_exec(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
 }
@@ -242,6 +324,26 @@ mod tests {
         uninstall(root, &[]).unwrap();
         assert!(!skill.exists());
         assert!(!std::fs::read_to_string(&copilot).unwrap().contains(MARK_BEGIN));
+    }
+
+    #[test]
+    fn hooks_install_and_uninstall() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
+        // Pre-existing post-commit hook with user content must be preserved.
+        std::fs::write(root.join(".git/hooks/post-commit"), "#!/bin/sh\necho mine\n").unwrap();
+
+        install_hooks(root).unwrap();
+        let pc = std::fs::read_to_string(root.join(".git/hooks/post-commit")).unwrap();
+        assert!(pc.contains("echo mine"), "user content preserved");
+        assert!(pc.contains("codemap index --incremental"));
+        assert!(root.join(".git/hooks/post-merge").exists());
+
+        uninstall_hooks(root).unwrap();
+        let pc2 = std::fs::read_to_string(root.join(".git/hooks/post-commit")).unwrap();
+        assert!(pc2.contains("echo mine"));
+        assert!(!pc2.contains(HOOK_BEGIN));
     }
 
     #[test]

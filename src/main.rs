@@ -101,6 +101,9 @@ enum Command {
         /// Show what would be written without writing.
         #[arg(long)]
         list: bool,
+        /// Also install opt-in git hooks (post-commit/merge/checkout -> incremental index).
+        #[arg(long)]
+        hooks: bool,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -108,6 +111,8 @@ enum Command {
     Uninstall {
         #[arg(long = "target")]
         targets: Vec<String>,
+        #[arg(long)]
+        hooks: bool,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -129,8 +134,8 @@ fn main() -> Result<()> {
         Command::Callees { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, true),
         Command::Export { symbol, format, depth, callers, root } => cmd_export(&root, &symbol, &format, depth, callers),
         Command::Mcp { root } => cmd_mcp(&root),
-        Command::Install { targets, list, root } => cmd_install(&root, &targets, list),
-        Command::Uninstall { targets, root } => cmd_uninstall(&root, &targets),
+        Command::Install { targets, list, hooks, root } => cmd_install(&root, &targets, list, hooks),
+        Command::Uninstall { targets, hooks, root } => cmd_uninstall(&root, &targets, hooks),
     }
 }
 
@@ -140,11 +145,14 @@ fn parse_targets(ids: &[String]) -> Result<Vec<codemap::skills::Target>> {
         .collect()
 }
 
-fn cmd_install(root: &Path, targets: &[String], list: bool) -> Result<()> {
+fn cmd_install(root: &Path, targets: &[String], list: bool, hooks: bool) -> Result<()> {
     let only = parse_targets(targets)?;
-    let reports = codemap::skills::install(root, &only, list)?;
+    let mut reports = codemap::skills::install(root, &only, list)?;
+    if !list && hooks {
+        reports.extend(codemap::skills::install_hooks(root)?);
+    }
     if reports.is_empty() {
-        println!("codemap: no agent hosts detected (try --target claude|cursor|copilot|agents|kilo)");
+        println!("codemap: no agent hosts detected (try --target claude|cursor|copilot|agents|kilo, or --hooks)");
     }
     for r in &reports {
         println!("{:9} {:?}  {}", r.target, r.action, r.path);
@@ -152,9 +160,12 @@ fn cmd_install(root: &Path, targets: &[String], list: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_uninstall(root: &Path, targets: &[String]) -> Result<()> {
+fn cmd_uninstall(root: &Path, targets: &[String], hooks: bool) -> Result<()> {
     let only = parse_targets(targets)?;
-    let reports = codemap::skills::uninstall(root, &only)?;
+    let mut reports = codemap::skills::uninstall(root, &only)?;
+    if hooks {
+        reports.extend(codemap::skills::uninstall_hooks(root)?);
+    }
     for r in &reports {
         println!("{:9} {:?}  {}", r.target, r.action, r.path);
     }
