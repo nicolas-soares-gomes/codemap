@@ -1,0 +1,16 @@
+# Dev quality gates (run `lefthook install` once after cloning).
+# Fast checks block the commit; the test suite runs on push. Bypass with `git commit --no-verify`.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: fmt
+      glob: "*.rs"
+      run: cargo fmt --all --check
+    - name: clippy
+      glob: "*.rs"
+      run: cargo clippy --all-targets -- -D warnings
+
+pre-push:
+  jobs:
+    - name: test
+      run: cargo test --locked
