@@ -3,6 +3,22 @@
 
 use crate::types::{Language, Range, SymbolKind};
 use tree_sitter::{Node, Parser};
+use tree_sitter_language::LanguageFn;
+
+// Grammars compiled from vendored C (see build.rs) — their published crates are incompatible
+// with our tree-sitter runtime, so we link the parser entry points directly.
+extern "C" {
+    fn tree_sitter_kotlin() -> *const ();
+    fn tree_sitter_clojure() -> *const ();
+}
+
+fn kotlin_language() -> tree_sitter::Language {
+    unsafe { LanguageFn::from_raw(tree_sitter_kotlin) }.into()
+}
+
+fn clojure_language() -> tree_sitter::Language {
+    unsafe { LanguageFn::from_raw(tree_sitter_clojure) }.into()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extracted {
@@ -26,7 +42,10 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
         Language::C => Some(tree_sitter_c::LANGUAGE.into()),
         Language::Cpp => Some(tree_sitter_cpp::LANGUAGE.into()),
         Language::Swift => Some(tree_sitter_swift::LANGUAGE.into()),
-        _ => None,
+        Language::Kotlin => Some(kotlin_language()),
+        Language::Clojure => Some(clojure_language()),
+        // No standalone JavaScript grammar is wired; detect_lang never yields it.
+        Language::JavaScript => None,
     }
 }
 
@@ -54,6 +73,8 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
         Language::Php => walk_php(tree.root_node(), src, &mut scope, &mut out),
         Language::C | Language::Cpp => walk_c(tree.root_node(), src, &mut scope, false, &mut out),
         Language::Swift => walk_swift(tree.root_node(), src, &mut scope, false, &mut out),
+        Language::Kotlin => walk_kotlin(tree.root_node(), src, &mut scope, false, &mut out),
+        Language::Clojure => walk_clojure(tree.root_node(), src, &mut scope, &mut out),
         _ => {}
     }
     out
@@ -200,6 +221,8 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
         Language::Php => collect_calls_php(tree.root_node(), src, &mut out),
         Language::C | Language::Cpp => collect_calls_c(tree.root_node(), src, &mut out),
         Language::Swift => collect_calls_swift(tree.root_node(), src, &mut out),
+        Language::Kotlin => collect_calls_kotlin(tree.root_node(), src, &mut out),
+        Language::Clojure => collect_calls_clojure(tree.root_node(), src, &mut out),
         _ => {}
     }
     out
@@ -248,6 +271,24 @@ fn callee_name(func: Node, src: &[u8]) -> Option<String> {
 
 fn node_text<'a>(n: Node, src: &'a [u8]) -> &'a str {
     std::str::from_utf8(&src[n.byte_range()]).unwrap_or("")
+}
+
+fn range_of(n: Node) -> Range {
+    let sp = n.start_position();
+    let ep = n.end_position();
+    Range {
+        start_line: sp.row as u32 + 1,
+        start_col: sp.column as u32,
+        end_line: ep.row as u32 + 1,
+        end_col: ep.column as u32,
+    }
+}
+
+/// First direct named child of the given kind.
+fn child_of_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut c = node.walk();
+    let found = node.named_children(&mut c).find(|n| n.kind() == kind);
+    found
 }
 
 fn field_text(n: Node, field: &str, src: &[u8]) -> Option<String> {
@@ -1272,5 +1313,159 @@ fn collect_calls_java(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
             }
         }
         collect_calls_java(child, src, out);
+    }
+}
+
+// ---- Kotlin (vendored grammar) ---------------------------------------------
+// The grammar has no node fields, so children are matched by kind/position. Top-level `object`
+// declarations are not reliably parsed by this grammar; classes, functions, properties and enum
+// entries are. Precise edges for Kotlin come from a language server (kotlin-lsp), not here.
+
+fn walk_kotlin(
+    node: Node,
+    src: &[u8],
+    scope: &mut Vec<String>,
+    in_type: bool,
+    out: &mut Vec<Extracted>,
+) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "class_declaration" => {
+                if let Some(nn) = child_of_kind(child, "type_identifier") {
+                    let name = node_text(nn, src).to_string();
+                    emit(out, &name, scope, SymbolKind::Class, child, Some(nn));
+                    scope.push(name);
+                    walk_kotlin(child, src, scope, true, out);
+                    scope.pop();
+                } else {
+                    walk_kotlin(child, src, scope, in_type, out);
+                }
+            }
+            "function_declaration" => {
+                if let Some(nn) = child_of_kind(child, "simple_identifier") {
+                    let kind = if in_type {
+                        SymbolKind::Method
+                    } else {
+                        SymbolKind::Function
+                    };
+                    emit(out, node_text(nn, src), scope, kind, child, Some(nn));
+                }
+                // Don't descend into the body: local vals would surface as spurious symbols.
+            }
+            "property_declaration" => {
+                if let Some(nn) = child_of_kind(child, "variable_declaration")
+                    .and_then(|vd| child_of_kind(vd, "simple_identifier"))
+                {
+                    let kind = if in_type {
+                        SymbolKind::Field
+                    } else {
+                        SymbolKind::Const
+                    };
+                    emit(out, node_text(nn, src), scope, kind, child, Some(nn));
+                }
+            }
+            "enum_entry" => {
+                if let Some(nn) = child_of_kind(child, "simple_identifier") {
+                    emit(
+                        out,
+                        node_text(nn, src),
+                        scope,
+                        SymbolKind::Variant,
+                        child,
+                        Some(nn),
+                    );
+                }
+            }
+            _ => walk_kotlin(child, src, scope, in_type, out),
+        }
+    }
+}
+
+fn collect_calls_kotlin(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            if let Some(name) = kotlin_callee_name(child, src) {
+                out.push(CallSite {
+                    name,
+                    range: range_of(child),
+                });
+            }
+        }
+        collect_calls_kotlin(child, src, out);
+    }
+}
+
+/// The called name: a bare identifier, or the rightmost member of a navigation (`a.b.greet`).
+fn kotlin_callee_name(call: Node, src: &[u8]) -> Option<String> {
+    let callee = call.named_child(0)?;
+    match callee.kind() {
+        "simple_identifier" => Some(node_text(callee, src).to_string()),
+        "navigation_expression" => child_of_kind(callee, "navigation_suffix")
+            .and_then(|s| child_of_kind(s, "simple_identifier"))
+            .map(|n| node_text(n, src).to_string()),
+        _ => None,
+    }
+}
+
+// ---- Clojure (vendored grammar) --------------------------------------------
+// The grammar is generic: every form is a `list_lit` of `sym_lit`s. Definitions are recognized
+// by their head symbol (`defn`, `def`, `ns`, ...). Precise edges come from a language server
+// (clojure-lsp); here we extract structure and name-based call sites.
+
+fn clojure_def_kind(head: &str) -> Option<SymbolKind> {
+    match head {
+        "ns" => Some(SymbolKind::Module),
+        "def" | "defonce" => Some(SymbolKind::Const),
+        "defn" | "defn-" | "defmulti" | "defmethod" => Some(SymbolKind::Function),
+        "defmacro" => Some(SymbolKind::Macro),
+        "defrecord" | "deftype" | "defprotocol" | "defstruct" => Some(SymbolKind::Struct),
+        _ => None,
+    }
+}
+
+fn walk_clojure(node: Node, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<Extracted>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "list_lit" {
+            if let (Some(head), Some(name_node)) = (child.named_child(0), child.named_child(1)) {
+                if head.kind() == "sym_lit" && name_node.kind() == "sym_lit" {
+                    if let Some(kind) = clojure_def_kind(node_text(head, src)) {
+                        let name = node_text(name_node, src).to_string();
+                        if kind == SymbolKind::Module {
+                            // The namespace becomes the scope prefix for everything after it.
+                            scope.clear();
+                            emit(out, &name, scope, kind, child, Some(name_node));
+                            scope.push(name);
+                            continue;
+                        }
+                        emit(out, &name, scope, kind, child, Some(name_node));
+                    }
+                }
+            }
+        }
+        walk_clojure(child, src, scope, out);
+    }
+}
+
+fn collect_calls_clojure(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "list_lit" {
+            if let Some(head) = child.named_child(0) {
+                if head.kind() == "sym_lit" {
+                    let name = node_text(head, src);
+                    // A def form is a definition, not a call; everything else is an invocation.
+                    if clojure_def_kind(name).is_none() {
+                        out.push(CallSite {
+                            name: name.to_string(),
+                            range: range_of(child),
+                        });
+                    }
+                }
+            }
+        }
+        collect_calls_clojure(child, src, out);
     }
 }

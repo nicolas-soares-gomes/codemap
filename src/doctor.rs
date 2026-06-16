@@ -122,16 +122,10 @@ pub fn run(root: &Path) -> Result<()> {
         } else {
             format!("{} missing", c.lsp_name)
         };
-        // Kotlin/Clojure have no working tree-sitter grammar wired yet.
-        let parse = if matches!(c.lang, "kotlin" | "clojure") {
-            "n/a"
-        } else {
-            "ok"
-        };
         let files_s = files.map(|n| n.to_string()).unwrap_or_else(|| "-".into());
         println!(
             "  {:<8} {:<6} {:<6} {:<18} {}",
-            c.lang, files_s, parse, scip, lsp
+            c.lang, files_s, "ok", scip, lsp
         );
     }
     if !tips.is_empty() {

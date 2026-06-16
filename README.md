@@ -29,8 +29,9 @@ by repeating `--scip`; `codemap status` then reports SCIP coverage per unit.
 
 ## Languages
 
-Rust, TypeScript, Python, Go, Java, C#, PHP, C, C++, Swift — each with its own extraction test.
-(Kotlin and Clojure are pending: their tree-sitter grammars need to be vendored.)
+Rust, TypeScript, Python, Go, Java, C#, PHP, C, C++, Swift, Kotlin, Clojure — each with its own
+extraction test. Kotlin and Clojure use vendored tree-sitter grammars (under `vendor/`, built by
+`build.rs`); their precise edges come from a language server (`kotlin-lsp`, `clojure-lsp`).
 
 ## Commands
 

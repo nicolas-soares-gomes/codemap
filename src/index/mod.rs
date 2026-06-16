@@ -53,6 +53,8 @@ pub fn detect_lang(path: &Path) -> Option<Language> {
         // .h is ambiguous (C vs C++ headers); default to C.
         Some("h") => Some(Language::C),
         Some("swift") => Some(Language::Swift),
+        Some("kt" | "kts") => Some(Language::Kotlin),
+        Some("clj" | "cljs" | "cljc" | "cljx" | "edn") => Some(Language::Clojure),
         _ => None,
     }
 }

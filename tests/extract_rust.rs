@@ -58,6 +58,6 @@ fn ranges_are_one_based_and_sane() {
 
 #[test]
 fn unsupported_language_returns_empty() {
-    // Clojure has no compatible tree-sitter grammar yet (pins an older tree-sitter crate).
-    assert!(ts::extract(Language::Clojure, "(defn main [] 1)\n").is_empty());
+    // No standalone JavaScript grammar is wired, so extraction yields nothing.
+    assert!(ts::extract(Language::JavaScript, "function main() {}\n").is_empty());
 }
