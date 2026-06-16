@@ -25,6 +25,12 @@ enum Command {
     Index {
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// After Tier0, ingest a SCIP index for resolved edges (Tier1).
+        #[arg(long)]
+        tier1: bool,
+        /// Path to the .scip file (default: <PATH>/index.scip with --tier1).
+        #[arg(long)]
+        scip: Option<PathBuf>,
     },
     /// Resolve a name/name_path to symbol ids (no code).
     Resolve {
@@ -99,7 +105,7 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Doctor => codemap::doctor::run(),
         Command::Init { path } => cmd_init(&path),
-        Command::Index { path } => cmd_index(&path),
+        Command::Index { path, tier1, scip } => cmd_index(&path, tier1, scip),
         Command::Resolve { query, limit, root } => cmd_resolve(&root, &query, limit),
         Command::Outline { file, root } => cmd_outline(&root, &file),
         Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
@@ -164,12 +170,31 @@ fn cmd_init(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_index(path: &Path) -> Result<()> {
+fn cmd_index(path: &Path, tier1: bool, scip: Option<PathBuf>) -> Result<()> {
     std::fs::create_dir_all(path.join(".codemap"))?;
     let mut db = Db::open(&db_path(path))?;
     let stats = codemap::index::index_full(&mut db, path)?;
     let edges = codemap::index::resolve_calls(&mut db, path)?;
-    println!("codemap: indexed {} files, {} symbols, {} call edges", stats.files, stats.symbols, edges);
+    println!("codemap: indexed {} files, {} symbols, {} call edges (Tier0)", stats.files, stats.symbols, edges);
+
+    if tier1 || scip.is_some() {
+        let scip_path = scip.unwrap_or_else(|| path.join("index.scip"));
+        if !scip_path.exists() {
+            bail!(
+                "Tier1 needs a SCIP index at {} — generate it yourself, then re-run with --scip <path>.\n\
+                 codemap never installs/runs the indexer. See `codemap doctor` for the per-language command.",
+                scip_path.display()
+            );
+        }
+        let s = codemap::scip::ingest(&mut db, &scip_path)?;
+        println!(
+            "codemap: Tier1 ingested {} ({} documents, {} files covered, {} resolved edges)",
+            scip_path.display(),
+            s.documents,
+            s.covered_files,
+            s.edges
+        );
+    }
     Ok(())
 }
 
