@@ -14,8 +14,11 @@ Work in progress.
 - **M1 — Tier0 tree-sitter (Rust, dogfood)** ✅: extraction, full-scan indexer, resolve/read-symbol/outline.
 - **M2 — Graph + MCP + skills** ✅: stable SymbolId, Tier0 call edges, callers/callees, MCP server (rmcp/stdio), multi-platform skill installer.
 - **M3 — SCIP Tier1** ✅: `doctor` capability matrix + SCIP ingestion (resolved call edges; verified with real `rust-analyzer scip`).
-- **M4 — Incremental / watcher** ✅: git-hook-driven & manual incremental reconcile, toggleable watcher, inline staleness guard.
-- **M5 — Export / Docker / languages** 🚧: DOT/Mermaid export ✅, static musl Docker image (scratch, ~15 MB) ✅, git-hooks installer ✅; more languages ongoing.
+- **M4 — Incremental / watcher** ✅: git fast-path reconcile (diff `indexed_commit..HEAD`) + mtime/size fallback, toggleable watcher, inline staleness guard, git-hooks installer.
+- **M5 — Export / Docker / languages** ✅: DOT/Mermaid export, static musl Docker image (scratch, ~15 MB), 10 Tier0 languages.
+
+All 10 MCP tools are implemented: `resolve_symbol`, `read_symbol`, `get_callers`, `get_callees`,
+`get_references`, `get_variables`, `trace_to_roots`, `impact`, `search_code`, `get_file_outline`.
 
 Tier0 languages: **Rust, TypeScript, Python, Go, Java, C#, PHP, C, C++, Swift** (each with a
 per-language extraction test). Kotlin and Clojure are blocked by their tree-sitter grammars
@@ -37,8 +40,16 @@ codemap outline <file>     # file symbols, no code
 codemap read-symbol <id>   # one symbol's code (minimal range)
 codemap callers <sym>      # who calls a symbol (resolved edges)
 codemap callees <sym>      # what a symbol calls
+codemap impact <sym>       # transitive callers — what breaks if you change it
+codemap trace <sym>        # call chain up to root entrypoints
+codemap refs <sym>         # references resolved to the enclosing symbol
+codemap variables <scope>  # fields/consts under a type/module
+codemap search <query>     # FTS5 symbol search
+codemap export <sym> --format dot|mermaid
+codemap index --incremental [--tier1 --scip <f>]
+codemap watch              # live incremental reindex
 codemap mcp                # MCP server over stdio (for agents)
-codemap install            # write the codemap skill into detected agent hosts
+codemap install [--hooks]  # write the codemap skill into detected agent hosts
 codemap doctor             # detect-only diagnostics
 ```
 
