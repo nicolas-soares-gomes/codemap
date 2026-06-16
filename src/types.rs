@@ -46,6 +46,7 @@ stable_enum! {
         CSharp = 10,
         Php = 11,
         Clojure = 12,
+        Tsx = 13,
     }
 }
 

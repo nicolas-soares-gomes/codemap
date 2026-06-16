@@ -44,6 +44,8 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
         Language::Swift => Some(tree_sitter_swift::LANGUAGE.into()),
         Language::Kotlin => Some(kotlin_language()),
         Language::Clojure => Some(clojure_language()),
+        // .tsx/.jsx/.js use the TSX grammar (superset of TS that also parses JSX).
+        Language::Tsx => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
         // No standalone JavaScript grammar is wired; detect_lang never yields it.
         Language::JavaScript => None,
     }
@@ -65,7 +67,9 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
     let mut scope: Vec<String> = Vec::new();
     match lang {
         Language::Rust => walk_rust(tree.root_node(), src, &mut scope, false, &mut out),
-        Language::TypeScript => walk_ts(tree.root_node(), src, &mut scope, &mut out),
+        Language::TypeScript | Language::Tsx => {
+            walk_ts(tree.root_node(), src, &mut scope, &mut out)
+        }
         Language::Python => walk_py(tree.root_node(), src, &mut scope, false, &mut out),
         Language::Go => walk_go(tree.root_node(), src, &mut scope, &mut out),
         Language::Java => walk_java(tree.root_node(), src, &mut scope, &mut out),
@@ -213,7 +217,7 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
     let mut out = Vec::new();
     match lang {
         Language::Rust => collect_calls_rust(tree.root_node(), src, &mut out),
-        Language::TypeScript => collect_calls_ts(tree.root_node(), src, &mut out),
+        Language::TypeScript | Language::Tsx => collect_calls_ts(tree.root_node(), src, &mut out),
         Language::Python => collect_calls_py(tree.root_node(), src, &mut out),
         Language::Go => collect_calls_go(tree.root_node(), src, &mut out),
         Language::Java => collect_calls_java(tree.root_node(), src, &mut out),

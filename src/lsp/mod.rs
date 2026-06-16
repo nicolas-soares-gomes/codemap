@@ -358,6 +358,7 @@ fn language_id(lang: Language) -> &'static str {
         C => "c",
         Cpp => "cpp",
         TypeScript => "typescript",
+        Tsx => "typescriptreact",
         JavaScript => "javascript",
         Python => "python",
         Java => "java",

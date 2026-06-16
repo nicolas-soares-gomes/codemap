@@ -43,6 +43,8 @@ pub fn detect_lang(path: &Path) -> Option<Language> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("rs") => Some(Language::Rust),
         Some("ts" | "mts" | "cts") => Some(Language::TypeScript),
+        // .tsx/.jsx/.js use the TSX grammar (a superset that also parses JSX).
+        Some("tsx" | "jsx" | "js" | "mjs" | "cjs") => Some(Language::Tsx),
         Some("py" | "pyi") => Some(Language::Python),
         Some("go") => Some(Language::Go),
         Some("java") => Some(Language::Java),

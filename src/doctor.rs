@@ -68,7 +68,7 @@ pub fn lsp_invocation(lang: Language) -> Vec<String> {
         Rust => &["rust-analyzer"],
         Go => &["gopls"],
         C | Cpp => &["clangd"],
-        TypeScript | JavaScript => &["typescript-language-server", "--stdio"],
+        TypeScript | JavaScript | Tsx => &["typescript-language-server", "--stdio"],
         Python => &["pyright-langserver", "--stdio"],
         Java => &["jdtls"],
         CSharp => &["csharp-ls"],
@@ -90,7 +90,7 @@ fn caps_key(lang: Language) -> &'static str {
     use Language::*;
     match lang {
         Rust => "rust",
-        TypeScript | JavaScript => "ts/js",
+        TypeScript | JavaScript | Tsx => "ts/js",
         Python => "python",
         Go => "go",
         Java => "java",
