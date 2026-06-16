@@ -1,12 +1,16 @@
 //! Tier-2 LSP enrichment (feature `tier2-lsp`): a user-installed language server confirms call
-//! edges, upgrading them to provenance=lsp/resolution=resolved. Skipped if rust-analyzer is
-//! absent (codemap never installs it).
+//! edges, upgrading them to provenance=lsp/resolution=resolved.
+//!
+//! `#[ignore]` by default: it drives a REAL rust-analyzer, so it's slow and environment-dependent
+//! (CI runners ship a rustup `rust-analyzer` shim that exits immediately). Run it explicitly with
+//! `cargo test --features tier2-lsp -- --ignored` on a machine with a working rust-analyzer.
 #![cfg(feature = "tier2-lsp")]
 
 use codemap::db::Db;
 use codemap::{index, lsp, query};
 
 #[test]
+#[ignore = "drives a real rust-analyzer; run with `--ignored` locally"]
 fn enrich_upgrades_edges_via_rust_analyzer() {
     if !codemap::doctor::binary_present("rust-analyzer") {
         eprintln!("skipping: rust-analyzer not on PATH");

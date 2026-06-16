@@ -226,10 +226,15 @@ impl Lsp {
             let remaining = deadline
                 .checked_duration_since(Instant::now())
                 .context("LSP request timed out")?;
-            let msg = self
-                .rx
-                .recv_timeout(remaining)
-                .map_err(|_| anyhow::anyhow!("LSP `{method}` timed out"))?;
+            let msg = match self.rx.recv_timeout(remaining) {
+                Ok(m) => m,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    bail!("LSP `{method}` timed out")
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("language server exited before answering `{method}`")
+                }
+            };
             // A response to our request.
             if msg.get("id").and_then(Value::as_i64) == Some(id) && msg.get("method").is_none() {
                 return Ok(msg);
