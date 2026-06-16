@@ -120,7 +120,8 @@ fn fetch_symbol(db: &Db, id: i64) -> Result<Option<SymRow>> {
 /// no longer exists, returns a steering error instead of wrong code.
 pub fn read_symbol(db: &mut Db, root: &Path, id: i64) -> Result<Code> {
     let mut row = fetch_symbol(db, id)?.ok_or_else(|| anyhow!("symbol {id} not found"))?;
-    let mut bytes = std::fs::read(root.join(&row.file)).map_err(|e| anyhow!("read {}: {e}", row.file))?;
+    let mut bytes =
+        std::fs::read(root.join(&row.file)).map_err(|e| anyhow!("read {}: {e}", row.file))?;
 
     let mut reindexed = false;
     if blake3::hash(&bytes).as_bytes()[..] != row.hash[..] {
@@ -129,11 +130,13 @@ pub fn read_symbol(db: &mut Db, root: &Path, id: i64) -> Result<Code> {
         row = fetch_symbol(db, id)?.ok_or_else(|| {
             anyhow!("symbol {id} no longer exists after reindex — re-resolve by name_path")
         })?;
-        bytes = std::fs::read(root.join(&row.file)).map_err(|e| anyhow!("read {}: {e}", row.file))?;
+        bytes =
+            std::fs::read(root.join(&row.file)).map_err(|e| anyhow!("read {}: {e}", row.file))?;
     }
 
     let offsets = line_index::decode(&row.offsets);
-    let (b0, b1) = line_index::byte_span(&offsets, bytes.len() as u64, row.start_line, row.end_line);
+    let (b0, b1) =
+        line_index::byte_span(&offsets, bytes.len() as u64, row.start_line, row.end_line);
     let code = String::from_utf8_lossy(&bytes[b0 as usize..b1 as usize]).into_owned();
     Ok(Code {
         id,
@@ -235,7 +238,10 @@ pub fn subgraph(db: &Db, root_id: i64, depth: i64, forward: bool) -> Result<Subg
         "SELECT np.text FROM symbol s JOIN string_pool np ON np.id=s.name_path_sid WHERE s.id=?1",
     )?;
     for &id in &ids {
-        if let Some(name) = label.query_row([id], |r| r.get::<_, String>(0)).optional()? {
+        if let Some(name) = label
+            .query_row([id], |r| r.get::<_, String>(0))
+            .optional()?
+        {
             nodes.push((id, name));
         }
     }
@@ -247,16 +253,31 @@ pub fn subgraph(db: &Db, root_id: i64, depth: i64, forward: bool) -> Result<Subg
         .prepare("SELECT target_symbol_id, provenance, resolution FROM edge WHERE source_symbol_id=?1 AND kind=1")?;
     for &src in &ids {
         let rows = estmt
-            .query_map([src], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .query_map([src], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (tgt, prov, res) in rows {
             if ids.contains(&tgt) {
-                edges.push((src, tgt, Provenance::from_i64(prov), Resolution::from_i64(res)));
+                edges.push((
+                    src,
+                    tgt,
+                    Provenance::from_i64(prov),
+                    Resolution::from_i64(res),
+                ));
             }
         }
     }
     edges.sort_by_key(|e| (e.0, e.1));
-    Ok(Subgraph { root: root_id, nodes, edges })
+    Ok(Subgraph {
+        root: root_id,
+        nodes,
+        edges,
+    })
 }
 
 fn row_to_hit(r: &rusqlite::Row) -> rusqlite::Result<Hit> {

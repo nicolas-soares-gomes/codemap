@@ -10,7 +10,11 @@ fn export_dot_and_mermaid_contain_nodes_and_edges() {
     let root = dir.path();
     fs::create_dir_all(root.join("src")).unwrap();
     fs::create_dir_all(root.join(".codemap")).unwrap();
-    fs::write(root.join("src/g.rs"), "fn callee() {}\nfn caller() { callee(); }\n").unwrap();
+    fs::write(
+        root.join("src/g.rs"),
+        "fn callee() {}\nfn caller() { callee(); }\n",
+    )
+    .unwrap();
 
     let mut db = Db::open(&root.join(".codemap/index.db")).unwrap();
     index::index_full(&mut db, root).unwrap();

@@ -22,7 +22,8 @@ const Rate = 5
 ";
 
 fn has(syms: &[Extracted], name_path: &str, kind: SymbolKind) -> bool {
-    syms.iter().any(|s| s.name_path == name_path && s.kind == kind)
+    syms.iter()
+        .any(|s| s.name_path == name_path && s.kind == kind)
 }
 
 #[test]
@@ -30,7 +31,10 @@ fn extracts_go_symbols_with_name_paths() {
     let syms = ts::extract(Language::Go, SRC);
     assert!(has(&syms, "Invoice", SymbolKind::Struct));
     assert!(has(&syms, "Payable", SymbolKind::Interface));
-    assert!(has(&syms, "Invoice/Charge", SymbolKind::Method), "receiver-prefixed method");
+    assert!(
+        has(&syms, "Invoice/Charge", SymbolKind::Method),
+        "receiver-prefixed method"
+    );
     assert!(has(&syms, "Helper", SymbolKind::Function));
     assert!(has(&syms, "Rate", SymbolKind::Const));
 }

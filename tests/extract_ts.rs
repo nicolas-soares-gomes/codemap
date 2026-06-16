@@ -19,7 +19,8 @@ export namespace billing {
 "#;
 
 fn has(syms: &[Extracted], name_path: &str, kind: SymbolKind) -> bool {
-    syms.iter().any(|s| s.name_path == name_path && s.kind == kind)
+    syms.iter()
+        .any(|s| s.name_path == name_path && s.kind == kind)
 }
 
 #[test]
@@ -36,7 +37,10 @@ fn extracts_typescript_symbols_with_name_paths() {
     assert!(has(&syms, "billing/Status/Open", SymbolKind::Variant));
     assert!(has(&syms, "billing/Status/Paid", SymbolKind::Variant));
     assert!(has(&syms, "billing/helper", SymbolKind::Function));
-    assert!(has(&syms, "billing/compute", SymbolKind::Function), "const arrow fn");
+    assert!(
+        has(&syms, "billing/compute", SymbolKind::Function),
+        "const arrow fn"
+    );
 }
 
 #[test]

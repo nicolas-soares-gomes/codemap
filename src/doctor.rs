@@ -36,7 +36,10 @@ pub fn run() -> Result<()> {
     println!("  schema_version: {}", crate::db::SCHEMA_VERSION);
     println!("  git: {}", state(present("git")));
     println!();
-    println!("  {:<8} {:<6} {:<18} tier2 (LSP)", "lang", "tier0", "tier1 (SCIP)");
+    println!(
+        "  {:<8} {:<6} {:<18} tier2 (LSP)",
+        "lang", "tier0", "tier1 (SCIP)"
+    );
     let mut tips: Vec<String> = Vec::new();
     for c in CAPS {
         let (t1, tip) = tier1_state(c);
@@ -51,11 +54,17 @@ pub fn run() -> Result<()> {
             format!("{} missing", c.tier2_lsp)
         };
         // Kotlin/Clojure have no compatible tree-sitter grammar yet (pre-1.0 / version pin).
-        let t0 = if matches!(c.lang, "kotlin" | "clojure") { "n/a" } else { "ok" };
+        let t0 = if matches!(c.lang, "kotlin" | "clojure") {
+            "n/a"
+        } else {
+            "ok"
+        };
         println!("  {:<8} {:<6} {:<18} {}", c.lang, t0, t1, t2);
     }
     if !tips.is_empty() {
-        println!("\n  tips for missing Tier1 indexers (run them yourself; codemap never installs):");
+        println!(
+            "\n  tips for missing Tier1 indexers (run them yourself; codemap never installs):"
+        );
         for t in tips {
             println!("    - {t}");
         }
@@ -73,7 +82,10 @@ fn tier1_state(c: &LangCaps) -> (String, Option<String>) {
     if present(c.tier1_bin) {
         (format!("ok{build}"), None)
     } else {
-        (format!("missing{build}"), Some(format!("{}: {}", c.lang, c.tier1_tip)))
+        (
+            format!("missing{build}"),
+            Some(format!("{}: {}", c.lang, c.tier1_tip)),
+        )
     }
 }
 

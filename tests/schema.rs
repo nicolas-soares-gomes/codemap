@@ -10,7 +10,9 @@ fn intern(db: &Db, s: &str) -> i64 {
         .execute("INSERT OR IGNORE INTO string_pool(text) VALUES (?1)", [s])
         .unwrap();
     db.conn
-        .query_row("SELECT id FROM string_pool WHERE text=?1", [s], |r| r.get(0))
+        .query_row("SELECT id FROM string_pool WHERE text=?1", [s], |r| {
+            r.get(0)
+        })
         .unwrap()
 }
 
@@ -74,9 +76,11 @@ fn range_col_over_4096_roundtrips_exactly() {
 
     let (line, col): (u32, u32) = db
         .conn
-        .query_row("SELECT start_line, start_col FROM symbol WHERE id=10", [], |r| {
-            Ok((r.get(0)?, r.get(1)?))
-        })
+        .query_row(
+            "SELECT start_line, start_col FROM symbol WHERE id=10",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
         .unwrap();
     assert_eq!((line, col), (100, 5000));
 }
@@ -96,7 +100,11 @@ fn fts5_no_orphan_when_pruned_correctly() {
 
     let before: i64 = db
         .conn
-        .query_row("SELECT count(*) FROM symbol_fts WHERE symbol_fts MATCH 'charge'", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM symbol_fts WHERE symbol_fts MATCH 'charge'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(before, 1);
 
@@ -112,7 +120,11 @@ fn fts5_no_orphan_when_pruned_correctly() {
 
     let after: i64 = db
         .conn
-        .query_row("SELECT count(*) FROM symbol_fts WHERE symbol_fts MATCH 'charge'", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM symbol_fts WHERE symbol_fts MATCH 'charge'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(after, 0);
 }
@@ -123,7 +135,15 @@ fn cte_with_cycle_terminates() {
     let db = Db::open_in_memory().unwrap();
     add_file(&db, 1, "src/g.rs");
     for id in 1..=4 {
-        add_symbol(&db, id, 1, &format!("s{id}"), &format!("s{id}"), id as u32, 0);
+        add_symbol(
+            &db,
+            id,
+            1,
+            &format!("s{id}"),
+            &format!("s{id}"),
+            id as u32,
+            0,
+        );
     }
     add_edge(&db, 1, 2, EdgeKind::Calls);
     add_edge(&db, 2, 3, EdgeKind::Calls);
@@ -140,7 +160,15 @@ fn callers_reverse_direction() {
     let db = Db::open_in_memory().unwrap();
     add_file(&db, 1, "src/g.rs");
     for id in 1..=3 {
-        add_symbol(&db, id, 1, &format!("s{id}"), &format!("s{id}"), id as u32, 0);
+        add_symbol(
+            &db,
+            id,
+            1,
+            &format!("s{id}"),
+            &format!("s{id}"),
+            id as u32,
+            0,
+        );
     }
     add_edge(&db, 2, 1, EdgeKind::Calls);
     add_edge(&db, 3, 2, EdgeKind::Calls);

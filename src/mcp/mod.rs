@@ -96,7 +96,10 @@ impl CodemapServer {
     fn db(&self) -> Result<Db, String> {
         let p = self.root.join(".codemap").join("index.db");
         if !p.exists() {
-            return Err(format!("index not found at {} — run `codemap index` first", p.display()));
+            return Err(format!(
+                "index not found at {} — run `codemap index` first",
+                p.display()
+            ));
         }
         Db::open(&p).map_err(e)
     }
@@ -121,7 +124,9 @@ impl CodemapServer {
 impl ServerHandler for CodemapServer {}
 
 pub async fn serve_stdio(root: PathBuf) -> anyhow::Result<()> {
-    let service = CodemapServer::new(root).serve(rmcp::transport::io::stdio()).await?;
+    let service = CodemapServer::new(root)
+        .serve(rmcp::transport::io::stdio())
+        .await?;
     service.waiting().await?;
     Ok(())
 }
@@ -131,13 +136,24 @@ fn e<E: std::fmt::Display>(err: E) -> String {
 }
 
 fn kind_label(k: Option<crate::types::SymbolKind>) -> String {
-    k.map(|k| format!("{k:?}").to_lowercase()).unwrap_or_else(|| "?".into())
+    k.map(|k| format!("{k:?}").to_lowercase())
+        .unwrap_or_else(|| "?".into())
 }
 
 fn proj_hits(header: &str, hits: &[Hit]) -> String {
-    let mut s = format!("# {header}  ({} matches)\n# fields: id | name_path | file:line | kind\n", hits.len());
+    let mut s = format!(
+        "# {header}  ({} matches)\n# fields: id | name_path | file:line | kind\n",
+        hits.len()
+    );
     for h in hits {
-        s.push_str(&format!("sym:{} | {} | {}:{} | {}\n", h.id, h.name_path, h.file, h.line, kind_label(h.kind)));
+        s.push_str(&format!(
+            "sym:{} | {} | {}:{} | {}\n",
+            h.id,
+            h.name_path,
+            h.file,
+            h.line,
+            kind_label(h.kind)
+        ));
     }
     if !hits.is_empty() {
         s.push_str("# next: read_symbol(id) for code | get_callers(id) for who uses it\n");
@@ -157,7 +173,13 @@ fn proj_edges(label: &str, root_id: i64, depth: i64, hits: &[EdgeHit]) -> String
         };
         s.push_str(&format!(
             "sym:{} | {} | {}:{} | {} | {} | {}\n",
-            h.id, h.name_path, h.file, h.line, kind_label(h.kind), h.depth, pr
+            h.id,
+            h.name_path,
+            h.file,
+            h.line,
+            kind_label(h.kind),
+            h.depth,
+            pr
         ));
     }
     s.push_str("# next: read_symbol(id) for code\n");
@@ -166,7 +188,10 @@ fn proj_edges(label: &str, root_id: i64, depth: i64, hits: &[EdgeHit]) -> String
 
 fn proj_read(c: &Code) -> String {
     let state = if c.reindexed { " (reindexed)" } else { "" };
-    let mut s = format!("# sym:{} {}  {}:{}-{}{state}\n", c.id, c.name_path, c.file, c.start_line, c.end_line);
+    let mut s = format!(
+        "# sym:{} {}  {}:{}-{}{state}\n",
+        c.id, c.name_path, c.file, c.start_line, c.end_line
+    );
     for (i, line) in c.code.lines().enumerate() {
         s.push_str(&format!("{:>5}  {line}\n", c.start_line as usize + i));
     }

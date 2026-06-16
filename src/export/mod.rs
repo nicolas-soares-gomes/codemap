@@ -6,13 +6,25 @@ use crate::types::Provenance;
 
 /// Graphviz DOT. Edge color encodes provenance (resolved/scip greener, syntactic oranger).
 pub fn to_dot(g: &Subgraph) -> String {
-    let mut s = String::from("digraph codemap {\n  rankdir=LR;\n  node [shape=box, fontname=\"monospace\"];\n");
+    let mut s = String::from(
+        "digraph codemap {\n  rankdir=LR;\n  node [shape=box, fontname=\"monospace\"];\n",
+    );
     for (id, name) in &g.nodes {
-        let extra = if *id == g.root { ", style=filled, fillcolor=\"#e0e7ff\"" } else { "" };
-        s.push_str(&format!("  n{id} [label=\"{}\"{extra}];\n", escape_dot(name)));
+        let extra = if *id == g.root {
+            ", style=filled, fillcolor=\"#e0e7ff\""
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "  n{id} [label=\"{}\"{extra}];\n",
+            escape_dot(name)
+        ));
     }
     for (src, tgt, prov, _res) in &g.edges {
-        s.push_str(&format!("  n{src} -> n{tgt} [color=\"{}\"];\n", edge_color(*prov)));
+        s.push_str(&format!(
+            "  n{src} -> n{tgt} [color=\"{}\"];\n",
+            edge_color(*prov)
+        ));
     }
     s.push_str("}\n");
     s

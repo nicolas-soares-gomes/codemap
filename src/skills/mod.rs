@@ -36,7 +36,13 @@ pub enum Target {
 
 impl Target {
     pub fn all() -> [Target; 5] {
-        [Target::Claude, Target::Cursor, Target::Copilot, Target::Agents, Target::Kilo]
+        [
+            Target::Claude,
+            Target::Cursor,
+            Target::Copilot,
+            Target::Agents,
+            Target::Kilo,
+        ]
     }
 
     pub fn id(self) -> &'static str {
@@ -119,16 +125,28 @@ pub fn detect(root: &Path) -> Vec<Target> {
 
 /// Install to the given targets (empty = auto-detected). `dry` only reports.
 pub fn install(root: &Path, only: &[Target], dry: bool) -> Result<Vec<Report>> {
-    let targets = if only.is_empty() { detect(root) } else { only.to_vec() };
+    let targets = if only.is_empty() {
+        detect(root)
+    } else {
+        only.to_vec()
+    };
     let mut reports = Vec::new();
     for t in targets {
         let Some(path) = t.path(root) else {
-            reports.push(Report { target: t.id(), path: "<no HOME>".into(), action: Action::Skipped("cannot locate".into()) });
+            reports.push(Report {
+                target: t.id(),
+                path: "<no HOME>".into(),
+                action: Action::Skipped("cannot locate".into()),
+            });
             continue;
         };
         let existed = path.exists();
         if dry {
-            reports.push(Report { target: t.id(), path: disp(&path), action: Action::WouldWrite });
+            reports.push(Report {
+                target: t.id(),
+                path: disp(&path),
+                action: Action::WouldWrite,
+            });
             continue;
         }
         if let Some(parent) = path.parent() {
@@ -144,7 +162,11 @@ pub fn install(root: &Path, only: &[Target], dry: bool) -> Result<Vec<Report>> {
         reports.push(Report {
             target: t.id(),
             path: disp(&path),
-            action: if existed { Action::Updated } else { Action::Written },
+            action: if existed {
+                Action::Updated
+            } else {
+                Action::Written
+            },
         });
     }
     Ok(reports)
@@ -152,7 +174,11 @@ pub fn install(root: &Path, only: &[Target], dry: bool) -> Result<Vec<Report>> {
 
 /// Remove codemap's skill from the given targets (empty = all known).
 pub fn uninstall(root: &Path, only: &[Target]) -> Result<Vec<Report>> {
-    let targets = if only.is_empty() { Target::all().to_vec() } else { only.to_vec() };
+    let targets = if only.is_empty() {
+        Target::all().to_vec()
+    } else {
+        only.to_vec()
+    };
     let mut reports = Vec::new();
     for t in targets {
         let Some(path) = t.path(root) else { continue };
@@ -160,16 +186,26 @@ pub fn uninstall(root: &Path, only: &[Target]) -> Result<Vec<Report>> {
             continue;
         }
         if t.dedicated() {
-            let owned = std::fs::read_to_string(&path).map(|c| c.contains(MARK_BEGIN)).unwrap_or(false);
+            let owned = std::fs::read_to_string(&path)
+                .map(|c| c.contains(MARK_BEGIN))
+                .unwrap_or(false);
             if owned {
                 std::fs::remove_file(&path).with_context(|| format!("remove {}", disp(&path)))?;
-                reports.push(Report { target: t.id(), path: disp(&path), action: Action::Removed });
+                reports.push(Report {
+                    target: t.id(),
+                    path: disp(&path),
+                    action: Action::Removed,
+                });
             }
         } else {
             let existing = std::fs::read_to_string(&path).unwrap_or_default();
             if existing.contains(MARK_BEGIN) {
                 std::fs::write(&path, strip_section(&existing))?;
-                reports.push(Report { target: t.id(), path: disp(&path), action: Action::Removed });
+                reports.push(Report {
+                    target: t.id(),
+                    path: disp(&path),
+                    action: Action::Removed,
+                });
             }
         }
     }
@@ -211,7 +247,11 @@ const HOOK_NAMES: &[&str] = &["post-commit", "post-merge", "post-checkout"];
 /// Install opt-in git hooks that run `codemap index --incremental` after commit/merge/checkout.
 pub fn install_hooks(root: &Path) -> Result<Vec<Report>> {
     if !root.join(".git").exists() {
-        return Ok(vec![Report { target: "git-hooks", path: disp(&root.join(".git")), action: Action::Skipped("no .git".into()) }]);
+        return Ok(vec![Report {
+            target: "git-hooks",
+            path: disp(&root.join(".git")),
+            action: Action::Skipped("no .git".into()),
+        }]);
     }
     let hooks_dir = root.join(".git/hooks");
     std::fs::create_dir_all(&hooks_dir)?;
@@ -232,7 +272,15 @@ pub fn install_hooks(root: &Path) -> Result<Vec<Report>> {
         };
         std::fs::write(&path, content)?;
         set_exec(&path)?;
-        reports.push(Report { target: "git-hooks", path: disp(&path), action: if existed { Action::Updated } else { Action::Written } });
+        reports.push(Report {
+            target: "git-hooks",
+            path: disp(&path),
+            action: if existed {
+                Action::Updated
+            } else {
+                Action::Written
+            },
+        });
     }
     Ok(reports)
 }
@@ -248,7 +296,11 @@ pub fn uninstall_hooks(root: &Path) -> Result<Vec<Report>> {
         };
         if existing.contains(HOOK_BEGIN) {
             std::fs::write(&path, strip_block(&existing))?;
-            reports.push(Report { target: "git-hooks", path: disp(&path), action: Action::Removed });
+            reports.push(Report {
+                target: "git-hooks",
+                path: disp(&path),
+                action: Action::Removed,
+            });
         }
     }
     Ok(reports)
@@ -256,7 +308,12 @@ pub fn uninstall_hooks(root: &Path) -> Result<Vec<Report>> {
 
 fn replace_block(existing: &str, block: &str) -> String {
     if let (Some(b), Some(e)) = (existing.find(HOOK_BEGIN), existing.find(HOOK_END)) {
-        format!("{}{}{}", &existing[..b], block, &existing[e + HOOK_END.len()..])
+        format!(
+            "{}{}{}",
+            &existing[..b],
+            block,
+            &existing[e + HOOK_END.len()..]
+        )
     } else {
         existing.to_string()
     }
@@ -313,8 +370,12 @@ mod tests {
         install(root, &[], false).unwrap();
         let skill = root.join(".claude/skills/codemap/SKILL.md");
         let copilot = root.join(".github/copilot-instructions.md");
-        assert!(std::fs::read_to_string(&skill).unwrap().contains("name: codemap"));
-        assert!(std::fs::read_to_string(&copilot).unwrap().contains(MARK_BEGIN));
+        assert!(std::fs::read_to_string(&skill)
+            .unwrap()
+            .contains("name: codemap"));
+        assert!(std::fs::read_to_string(&copilot)
+            .unwrap()
+            .contains(MARK_BEGIN));
 
         // Idempotent: a second install keeps a single marked block.
         install(root, &[], false).unwrap();
@@ -323,7 +384,9 @@ mod tests {
 
         uninstall(root, &[]).unwrap();
         assert!(!skill.exists());
-        assert!(!std::fs::read_to_string(&copilot).unwrap().contains(MARK_BEGIN));
+        assert!(!std::fs::read_to_string(&copilot)
+            .unwrap()
+            .contains(MARK_BEGIN));
     }
 
     #[test]
@@ -332,7 +395,11 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
         // Pre-existing post-commit hook with user content must be preserved.
-        std::fs::write(root.join(".git/hooks/post-commit"), "#!/bin/sh\necho mine\n").unwrap();
+        std::fs::write(
+            root.join(".git/hooks/post-commit"),
+            "#!/bin/sh\necho mine\n",
+        )
+        .unwrap();
 
         install_hooks(root).unwrap();
         let pc = std::fs::read_to_string(root.join(".git/hooks/post-commit")).unwrap();

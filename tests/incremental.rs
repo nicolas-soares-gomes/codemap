@@ -28,8 +28,23 @@ fn reconcile_handles_change_add_delete() {
     assert!(r.changed >= 1, "a.rs changed");
     assert!(r.unchanged >= 1, "keep.rs unchanged");
 
-    assert_eq!(query::resolve(&db, "a2", 5).unwrap().len(), 1, "new symbol indexed");
-    assert_eq!(query::resolve(&db, "c", 5).unwrap().len(), 1, "added file indexed");
-    assert!(query::resolve(&db, "b", 5).unwrap().is_empty(), "deleted file pruned");
-    assert_eq!(query::resolve(&db, "keep", 5).unwrap().len(), 1, "kept symbol intact");
+    assert_eq!(
+        query::resolve(&db, "a2", 5).unwrap().len(),
+        1,
+        "new symbol indexed"
+    );
+    assert_eq!(
+        query::resolve(&db, "c", 5).unwrap().len(),
+        1,
+        "added file indexed"
+    );
+    assert!(
+        query::resolve(&db, "b", 5).unwrap().is_empty(),
+        "deleted file pruned"
+    );
+    assert_eq!(
+        query::resolve(&db, "keep", 5).unwrap().len(),
+        1,
+        "kept symbol intact"
+    );
 }

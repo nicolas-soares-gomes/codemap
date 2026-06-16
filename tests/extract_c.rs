@@ -20,7 +20,8 @@ int *helper(void) {
 ";
 
 fn has(syms: &[Extracted], name_path: &str, kind: SymbolKind) -> bool {
-    syms.iter().any(|s| s.name_path == name_path && s.kind == kind)
+    syms.iter()
+        .any(|s| s.name_path == name_path && s.kind == kind)
 }
 
 #[test]
@@ -31,7 +32,10 @@ fn extracts_c_symbols() {
     assert!(has(&syms, "Status", SymbolKind::Enum));
     assert!(has(&syms, "Status/OPEN", SymbolKind::Variant));
     assert!(has(&syms, "charge", SymbolKind::Function));
-    assert!(has(&syms, "helper", SymbolKind::Function), "pointer-returning fn name via declarator chain");
+    assert!(
+        has(&syms, "helper", SymbolKind::Function),
+        "pointer-returning fn name via declarator chain"
+    );
 }
 
 #[test]

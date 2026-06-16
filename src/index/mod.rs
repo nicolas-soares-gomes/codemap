@@ -137,7 +137,9 @@ fn index_one(
 
     // Upsert the file row, keeping its id stable.
     let file_id: Option<i64> = tx
-        .query_row("SELECT id FROM file WHERE path_sid=?1", [path_sid], |r| r.get(0))
+        .query_row("SELECT id FROM file WHERE path_sid=?1", [path_sid], |r| {
+            r.get(0)
+        })
         .optional()?;
     let file_id = match file_id {
         Some(fid) => {
@@ -175,7 +177,11 @@ fn index_one(
         let rows = stmt.query_map([file_id], |r| {
             Ok((
                 r.get::<_, Vec<u8>>(0)?,
-                ExistingSymbol { id: r.get(1)?, name: r.get(2)?, name_path: r.get(3)? },
+                ExistingSymbol {
+                    id: r.get(1)?,
+                    name: r.get(2)?,
+                    name_path: r.get(3)?,
+                },
             ))
         })?;
         for row in rows {
@@ -213,8 +219,19 @@ fn index_one(
                 "INSERT INTO symbol(symbol_key,file_id,name_sid,name_path_sid,kind,
                                     start_line,start_col,end_line,end_col,sel_line,sel_col)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                params![key, file_id, name_sid, np_sid, kind_i,
-                    ex.range.start_line, ex.range.start_col, ex.range.end_line, ex.range.end_col, ex.sel_line, ex.sel_col],
+                params![
+                    key,
+                    file_id,
+                    name_sid,
+                    np_sid,
+                    kind_i,
+                    ex.range.start_line,
+                    ex.range.start_col,
+                    ex.range.end_line,
+                    ex.range.end_col,
+                    ex.sel_line,
+                    ex.sel_col
+                ],
             )?;
             let sid = tx.last_insert_rowid();
             tx.execute(
@@ -246,9 +263,9 @@ fn index_one(
 /// are indexed. Idempotent: clears each file's prior call edges/occurrences first.
 pub fn resolve_calls(db: &mut Db, root: &Path) -> Result<u64> {
     let files: Vec<(i64, String, i64)> = {
-        let mut stmt = db
-            .conn
-            .prepare("SELECT f.id, fp.text, f.lang FROM file f JOIN string_pool fp ON fp.id=f.path_sid")?;
+        let mut stmt = db.conn.prepare(
+            "SELECT f.id, fp.text, f.lang FROM file f JOIN string_pool fp ON fp.id=f.path_sid",
+        )?;
         let rows = stmt
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -273,7 +290,9 @@ pub fn resolve_calls(db: &mut Db, root: &Path) -> Result<u64> {
 /// Re-resolve the call edges originating in a single file (used by incremental reconcile).
 pub fn resolve_calls_file(db: &mut Db, root: &Path, rel: &str) -> Result<u64> {
     let path = root.join(rel);
-    let Some(lang) = detect_lang(&path) else { return Ok(0) };
+    let Some(lang) = detect_lang(&path) else {
+        return Ok(0);
+    };
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(_) => return Ok(0),
@@ -437,7 +456,14 @@ fn file_snapshot(db: &Db) -> Result<FileSnapshot> {
     )?;
     let rows = stmt
         .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, Vec<u8>>(3)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                (
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Vec<u8>>(3)?,
+                ),
+            ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows.into_iter().collect())
@@ -450,7 +476,9 @@ fn resolve_calls_for_file(db: &mut Db, file_id: i64, calls: &[ts::CallSite]) -> 
             .conn
             .prepare("SELECT id,start_line,end_line,kind FROM symbol WHERE file_id=?1")?;
         let rows = stmt
-            .query_map([file_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .query_map([file_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
@@ -512,7 +540,9 @@ fn innermost_callable(callables: &[(i64, u32, u32, i64)], line: u32) -> Option<i
     callables
         .iter()
         .filter(|(_, s, e, k)| {
-            *s <= line && line <= *e && (*k == SymbolKind::Function.as_i64() || *k == SymbolKind::Method.as_i64())
+            *s <= line
+                && line <= *e
+                && (*k == SymbolKind::Function.as_i64() || *k == SymbolKind::Method.as_i64())
         })
         .min_by_key(|(_, s, e, _)| e - s)
         .map(|(id, _, _, _)| *id)

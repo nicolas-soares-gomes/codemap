@@ -17,8 +17,7 @@ pub struct Db {
 
 impl Db {
     pub fn open(path: &Path) -> Result<Self> {
-        let conn =
-            Connection::open(path).with_context(|| format!("open db {}", path.display()))?;
+        let conn = Connection::open(path).with_context(|| format!("open db {}", path.display()))?;
         let mut db = Self { conn };
         db.apply_pragmas(true)?;
         db.migrate()?;
@@ -61,7 +60,8 @@ impl Db {
                 "INSERT OR REPLACE INTO meta(key,value) VALUES ('schema_version', ?1)",
                 [SCHEMA_VERSION.to_string()],
             )?;
-            self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            self.conn
+                .pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         Ok(())
     }
@@ -75,12 +75,24 @@ impl Db {
     }
 
     /// Forward traversal (callees): cycle-safe recursive CTE with depth cap and total limit.
-    pub fn callees(&self, root: i64, kind: i64, max_depth: i64, limit: i64) -> Result<Vec<(i64, i64)>> {
+    pub fn callees(
+        &self,
+        root: i64,
+        kind: i64,
+        max_depth: i64,
+        limit: i64,
+    ) -> Result<Vec<(i64, i64)>> {
         self.traverse(root, kind, max_depth, limit, Direction::Forward)
     }
 
     /// Reverse traversal (callers).
-    pub fn callers(&self, root: i64, kind: i64, max_depth: i64, limit: i64) -> Result<Vec<(i64, i64)>> {
+    pub fn callers(
+        &self,
+        root: i64,
+        kind: i64,
+        max_depth: i64,
+        limit: i64,
+    ) -> Result<Vec<(i64, i64)>> {
         self.traverse(root, kind, max_depth, limit, Direction::Reverse)
     }
 

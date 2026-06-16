@@ -24,13 +24,17 @@ pub struct ScipStats {
 }
 
 pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
-    let bytes = std::fs::read(scip_path).with_context(|| format!("read {}", scip_path.display()))?;
+    let bytes =
+        std::fs::read(scip_path).with_context(|| format!("read {}", scip_path.display()))?;
     let index = ::scip::types::Index::parse_from_bytes(&bytes).context("parse SCIP index")?;
 
     let mut stats = ScipStats::default();
     let tx = db.conn.transaction()?;
     // Idempotency: drop previously-derived SCIP edges.
-    tx.execute("DELETE FROM edge WHERE provenance=?1", [Provenance::Scip.as_i64()])?;
+    tx.execute(
+        "DELETE FROM edge WHERE provenance=?1",
+        [Provenance::Scip.as_i64()],
+    )?;
 
     // Pass A: map each SCIP symbol string to our symbol id via (file, definition line).
     let mut sym_map: HashMap<String, (i64, i64)> = HashMap::new(); // scip_symbol -> (id, kind)
@@ -46,10 +50,15 @@ pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
             if occ.symbol_roles & ROLE_DEFINITION == 0 {
                 continue;
             }
-            let Some(&line0) = occ.range.first() else { continue };
+            let Some(&line0) = occ.range.first() else {
+                continue;
+            };
             if let Some(&(sid, kind)) = by_sel.get(&((line0 as u32) + 1)) {
                 let sym_sid = writer::intern(&tx, &occ.symbol)?;
-                tx.execute("UPDATE symbol SET scip_sym_sid=?2 WHERE id=?1", params![sid, sym_sid])?;
+                tx.execute(
+                    "UPDATE symbol SET scip_sym_sid=?2 WHERE id=?1",
+                    params![sid, sym_sid],
+                )?;
                 sym_map.insert(occ.symbol.clone(), (sid, kind));
             }
         }
@@ -74,12 +83,18 @@ pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
             if occ.symbol_roles & ROLE_DEFINITION != 0 {
                 continue;
             }
-            let Some(&line0) = occ.range.first() else { continue };
-            let Some(&(callee, kind)) = sym_map.get(&occ.symbol) else { continue };
+            let Some(&line0) = occ.range.first() else {
+                continue;
+            };
+            let Some(&(callee, kind)) = sym_map.get(&occ.symbol) else {
+                continue;
+            };
             if kind != SymbolKind::Function.as_i64() && kind != SymbolKind::Method.as_i64() {
                 continue; // only function/method references are "calls"
             }
-            let Some(caller) = innermost_callable(&callables, (line0 as u32) + 1) else { continue };
+            let Some(caller) = innermost_callable(&callables, (line0 as u32) + 1) else {
+                continue;
+            };
             stats.edges += tx.execute(
                 "INSERT OR IGNORE INTO edge(source_symbol_id,target_symbol_id,kind,provenance,resolution)
                  VALUES (?1,?2,?3,?4,?5)",
@@ -104,18 +119,33 @@ fn file_id_by_path(conn: &rusqlite::Connection, path: &str) -> Result<Option<i64
         .optional()?)
 }
 
-fn symbols_by_sel_line(conn: &rusqlite::Connection, file_id: i64) -> Result<HashMap<u32, (i64, i64)>> {
+fn symbols_by_sel_line(
+    conn: &rusqlite::Connection,
+    file_id: i64,
+) -> Result<HashMap<u32, (i64, i64)>> {
     let mut stmt = conn.prepare("SELECT sel_line, id, kind FROM symbol WHERE file_id=?1")?;
     let rows = stmt
-        .query_map([file_id], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+        .query_map([file_id], |r| {
+            Ok((
+                r.get::<_, u32>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows.into_iter().map(|(l, id, k)| (l, (id, k))).collect())
 }
 
-fn callables_in_file(conn: &rusqlite::Connection, file_id: i64) -> Result<Vec<(i64, u32, u32, i64)>> {
-    let mut stmt = conn.prepare("SELECT id,start_line,end_line,kind FROM symbol WHERE file_id=?1")?;
+fn callables_in_file(
+    conn: &rusqlite::Connection,
+    file_id: i64,
+) -> Result<Vec<(i64, u32, u32, i64)>> {
+    let mut stmt =
+        conn.prepare("SELECT id,start_line,end_line,kind FROM symbol WHERE file_id=?1")?;
     let rows = stmt
-        .query_map([file_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+        .query_map([file_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -124,7 +154,9 @@ fn innermost_callable(callables: &[(i64, u32, u32, i64)], line: u32) -> Option<i
     callables
         .iter()
         .filter(|(_, s, e, k)| {
-            *s <= line && line <= *e && (*k == SymbolKind::Function.as_i64() || *k == SymbolKind::Method.as_i64())
+            *s <= line
+                && line <= *e
+                && (*k == SymbolKind::Function.as_i64() || *k == SymbolKind::Method.as_i64())
         })
         .min_by_key(|(_, s, e, _)| e - s)
         .map(|(id, _, _, _)| *id)
@@ -138,8 +170,14 @@ mod tests {
     use std::io::Write;
 
     fn intern(db: &Db, s: &str) -> i64 {
-        db.conn.execute("INSERT OR IGNORE INTO string_pool(text) VALUES (?1)", [s]).unwrap();
-        db.conn.query_row("SELECT id FROM string_pool WHERE text=?1", [s], |r| r.get(0)).unwrap()
+        db.conn
+            .execute("INSERT OR IGNORE INTO string_pool(text) VALUES (?1)", [s])
+            .unwrap();
+        db.conn
+            .query_row("SELECT id FROM string_pool WHERE text=?1", [s], |r| {
+                r.get(0)
+            })
+            .unwrap()
     }
 
     fn add_symbol(db: &Db, id: i64, file_id: i64, name: &str, kind: SymbolKind, line: u32) {

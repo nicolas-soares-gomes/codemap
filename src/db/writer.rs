@@ -5,8 +5,15 @@ use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 
 pub fn intern(conn: &Connection, text: &str) -> Result<i64> {
-    conn.execute("INSERT OR IGNORE INTO string_pool(text) VALUES (?1)", [text])?;
-    Ok(conn.query_row("SELECT id FROM string_pool WHERE text=?1", [text], |r| r.get(0))?)
+    conn.execute(
+        "INSERT OR IGNORE INTO string_pool(text) VALUES (?1)",
+        [text],
+    )?;
+    Ok(
+        conn.query_row("SELECT id FROM string_pool WHERE text=?1", [text], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// Remove a file and its symbols. Manually syncs contentless FTS5: emits 'delete' with the

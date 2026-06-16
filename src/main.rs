@@ -6,7 +6,11 @@ use codemap::types::SymbolKind;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "codemap", version, about = "Deterministic code index for AI agents")]
+#[command(
+    name = "codemap",
+    version,
+    about = "Deterministic code index for AI agents"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -131,26 +135,59 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Doctor => codemap::doctor::run(),
         Command::Init { path } => cmd_init(&path),
-        Command::Index { path, incremental, tier1, scip } => cmd_index(&path, incremental, tier1, scip),
+        Command::Index {
+            path,
+            incremental,
+            tier1,
+            scip,
+        } => cmd_index(&path, incremental, tier1, scip),
         Command::Resolve { query, limit, root } => cmd_resolve(&root, &query, limit),
         Command::Outline { file, root } => cmd_outline(&root, &file),
         Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
-        Command::Callers { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, false),
-        Command::Callees { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, true),
-        Command::Export { symbol, format, depth, callers, root } => cmd_export(&root, &symbol, &format, depth, callers),
+        Command::Callers {
+            symbol,
+            depth,
+            limit,
+            root,
+        } => cmd_edges(&root, &symbol, depth, limit, false),
+        Command::Callees {
+            symbol,
+            depth,
+            limit,
+            root,
+        } => cmd_edges(&root, &symbol, depth, limit, true),
+        Command::Export {
+            symbol,
+            format,
+            depth,
+            callers,
+            root,
+        } => cmd_export(&root, &symbol, &format, depth, callers),
         Command::Watch { path } => {
             std::fs::create_dir_all(path.join(".codemap"))?;
             codemap::index::watch(&path)
         }
         Command::Mcp { root } => cmd_mcp(&root),
-        Command::Install { targets, list, hooks, root } => cmd_install(&root, &targets, list, hooks),
-        Command::Uninstall { targets, hooks, root } => cmd_uninstall(&root, &targets, hooks),
+        Command::Install {
+            targets,
+            list,
+            hooks,
+            root,
+        } => cmd_install(&root, &targets, list, hooks),
+        Command::Uninstall {
+            targets,
+            hooks,
+            root,
+        } => cmd_uninstall(&root, &targets, hooks),
     }
 }
 
 fn parse_targets(ids: &[String]) -> Result<Vec<codemap::skills::Target>> {
     ids.iter()
-        .map(|s| codemap::skills::Target::from_id(s).ok_or_else(|| anyhow::anyhow!("unknown target: {s}")))
+        .map(|s| {
+            codemap::skills::Target::from_id(s)
+                .ok_or_else(|| anyhow::anyhow!("unknown target: {s}"))
+        })
         .collect()
 }
 
@@ -206,7 +243,10 @@ fn db_path(root: &Path) -> PathBuf {
 fn open_existing(root: &Path) -> Result<Db> {
     let p = db_path(root);
     if !p.exists() {
-        bail!("index not found at {} — run `codemap index` first", p.display());
+        bail!(
+            "index not found at {} — run `codemap index` first",
+            p.display()
+        );
     }
     Db::open(&p)
 }
@@ -216,7 +256,11 @@ fn cmd_init(path: &Path) -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let p = dir.join("index.db");
     let _db = Db::open(&p)?;
-    println!("codemap: initialized index at {} (schema v{})", p.display(), codemap::db::SCHEMA_VERSION);
+    println!(
+        "codemap: initialized index at {} (schema v{})",
+        p.display(),
+        codemap::db::SCHEMA_VERSION
+    );
     Ok(())
 }
 
@@ -232,7 +276,10 @@ fn cmd_index(path: &Path, incremental: bool, tier1: bool, scip: Option<PathBuf>)
     } else {
         let stats = codemap::index::index_full(&mut db, path)?;
         let edges = codemap::index::resolve_calls(&mut db, path)?;
-        println!("codemap: indexed {} files, {} symbols, {} call edges (Tier0)", stats.files, stats.symbols, edges);
+        println!(
+            "codemap: indexed {} files, {} symbols, {} call edges (Tier0)",
+            stats.files, stats.symbols, edges
+        );
     }
 
     if tier1 || scip.is_some() {
@@ -262,7 +309,14 @@ fn cmd_resolve(root: &Path, query: &str, limit: i64) -> Result<()> {
     println!("# resolve \"{query}\"  ({} matches)", hits.len());
     println!("# fields: id | name_path | file:line | kind");
     for h in &hits {
-        println!("sym:{} | {} | {}:{} | {}", h.id, h.name_path, h.file, h.line, kind_label(h.kind));
+        println!(
+            "sym:{} | {} | {}:{} | {}",
+            h.id,
+            h.name_path,
+            h.file,
+            h.line,
+            kind_label(h.kind)
+        );
     }
     if !hits.is_empty() {
         println!("# next: read-symbol <id> for code");
@@ -275,7 +329,13 @@ fn cmd_outline(root: &Path, file: &str) -> Result<()> {
     let hits = query::outline(&db, file)?;
     println!("# outline {file}  ({} symbols)", hits.len());
     for h in &hits {
-        println!("sym:{} | {} | :{} | {}", h.id, h.name_path, h.line, kind_label(h.kind));
+        println!(
+            "sym:{} | {} | :{} | {}",
+            h.id,
+            h.name_path,
+            h.line,
+            kind_label(h.kind)
+        );
     }
     Ok(())
 }
@@ -285,7 +345,10 @@ fn cmd_read_symbol(root: &Path, id_arg: &str) -> Result<()> {
     let id = query::resolve_arg(&db, id_arg)?;
     let c = query::read_symbol(&mut db, root, id)?;
     let state = if c.reindexed { " (reindexed)" } else { "" };
-    println!("# sym:{} {}  {}:{}-{}{}", c.id, c.name_path, c.file, c.start_line, c.end_line, state);
+    println!(
+        "# sym:{} {}  {}:{}-{}{}",
+        c.id, c.name_path, c.file, c.start_line, c.end_line, state
+    );
     for (i, line) in c.code.lines().enumerate() {
         println!("{:>5}  {line}", c.start_line as usize + i);
     }
@@ -301,18 +364,31 @@ fn cmd_edges(root: &Path, symbol: &str, depth: i64, limit: i64, forward: bool) -
         query::callers(&db, id, depth, limit)?
     };
     let label = if forward { "callees" } else { "callers" };
-    println!("# {label} of sym:{id}  (depth<={depth}, {} shown)", hits.len());
+    println!(
+        "# {label} of sym:{id}  (depth<={depth}, {} shown)",
+        hits.len()
+    );
     println!("# fields: id | name_path | file:line | kind | depth | prov/res");
     for h in &hits {
         let pr = match (h.provenance, h.resolution) {
             (Some(p), Some(r)) => format!("{}/{}", p.abbrev(), r.abbrev()),
             _ => "-".into(),
         };
-        println!("sym:{} | {} | {}:{} | {} | {} | {}", h.id, h.name_path, h.file, h.line, kind_label(h.kind), h.depth, pr);
+        println!(
+            "sym:{} | {} | {}:{} | {} | {} | {}",
+            h.id,
+            h.name_path,
+            h.file,
+            h.line,
+            kind_label(h.kind),
+            h.depth,
+            pr
+        );
     }
     Ok(())
 }
 
 fn kind_label(k: Option<SymbolKind>) -> String {
-    k.map(|k| format!("{k:?}").to_lowercase()).unwrap_or_else(|| "?".into())
+    k.map(|k| format!("{k:?}").to_lowercase())
+        .unwrap_or_else(|| "?".into())
 }

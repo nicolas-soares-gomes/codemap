@@ -36,7 +36,10 @@ fn index_then_resolve_and_read() {
     let code = query::read_symbol(&mut db, dir.path(), charge.id).unwrap();
     assert!(code.code.contains("pub fn charge"));
     assert!(code.code.contains("amount"));
-    assert!(!code.code.contains("struct PaymentService"), "must be only the method range");
+    assert!(
+        !code.code.contains("struct PaymentService"),
+        "must be only the method range"
+    );
 }
 
 #[test]
@@ -66,7 +69,11 @@ fn symbol_id_is_stable_across_reindex() {
     let hit_after = query::resolve(&db, "charge", 25).unwrap();
     assert_eq!(hit_after.len(), 1);
     assert_eq!(hit_after[0].id, id_before, "id must survive reindex");
-    assert_eq!(hit_after[0].line, line_before + 1, "range must be refreshed");
+    assert_eq!(
+        hit_after[0].line,
+        line_before + 1,
+        "range must be refreshed"
+    );
 }
 
 #[test]
@@ -81,7 +88,10 @@ fn read_symbol_staleness_guard_reindexes_inline() {
 
     let c = query::read_symbol(&mut db, dir.path(), id).unwrap();
     assert!(c.reindexed, "should reindex inline on hash change");
-    assert!(c.code.contains("pub fn charge"), "must serve the correct (shifted) range");
+    assert!(
+        c.code.contains("pub fn charge"),
+        "must serve the correct (shifted) range"
+    );
     assert!(!c.code.contains("struct PaymentService"));
 }
 
@@ -104,10 +114,16 @@ fn call_edges_link_caller_and_callee() {
     let caller_id = query::resolve(&db, "caller", 5).unwrap()[0].id;
 
     let callers = query::callers(&db, callee_id, 1, 50).unwrap();
-    assert!(callers.iter().any(|h| h.name_path == "caller"), "caller should call callee");
+    assert!(
+        callers.iter().any(|h| h.name_path == "caller"),
+        "caller should call callee"
+    );
 
     let callees = query::callees(&db, caller_id, 1, 50).unwrap();
-    assert!(callees.iter().any(|h| h.name_path == "callee"), "caller should reach callee");
+    assert!(
+        callees.iter().any(|h| h.name_path == "callee"),
+        "caller should reach callee"
+    );
 }
 
 #[test]
@@ -129,7 +145,11 @@ fn reindex_is_idempotent_and_prunes_fts() {
 
     let fts_hits: i64 = db
         .conn
-        .query_row("SELECT count(*) FROM symbol_fts WHERE symbol_fts MATCH 'charge'", [], |r| r.get(0))
+        .query_row(
+            "SELECT count(*) FROM symbol_fts WHERE symbol_fts MATCH 'charge'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(fts_hits, 1);
 }

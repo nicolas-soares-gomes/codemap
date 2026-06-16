@@ -19,7 +19,8 @@ enum Status { OPEN, PAID }
 "#;
 
 fn has(syms: &[Extracted], name_path: &str, kind: SymbolKind) -> bool {
-    syms.iter().any(|s| s.name_path == name_path && s.kind == kind)
+    syms.iter()
+        .any(|s| s.name_path == name_path && s.kind == kind)
 }
 
 #[test]
