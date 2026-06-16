@@ -24,6 +24,7 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
         Language::CSharp => Some(tree_sitter_c_sharp::LANGUAGE.into()),
         Language::Php => Some(tree_sitter_php::LANGUAGE_PHP.into()),
         Language::C => Some(tree_sitter_c::LANGUAGE.into()),
+        Language::Cpp => Some(tree_sitter_cpp::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -50,7 +51,7 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
         Language::Java => walk_java(tree.root_node(), src, &mut scope, &mut out),
         Language::CSharp => walk_csharp(tree.root_node(), src, &mut scope, &mut out),
         Language::Php => walk_php(tree.root_node(), src, &mut scope, &mut out),
-        Language::C => walk_c(tree.root_node(), src, &mut scope, &mut out),
+        Language::C | Language::Cpp => walk_c(tree.root_node(), src, &mut scope, false, &mut out),
         _ => {}
     }
     out
@@ -163,7 +164,7 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
         Language::Java => collect_calls_java(tree.root_node(), src, &mut out),
         Language::CSharp => collect_calls_csharp(tree.root_node(), src, &mut out),
         Language::Php => collect_calls_php(tree.root_node(), src, &mut out),
-        Language::C => collect_calls_c(tree.root_node(), src, &mut out),
+        Language::C | Language::Cpp => collect_calls_c(tree.root_node(), src, &mut out),
         _ => {}
     }
     out
@@ -542,34 +543,45 @@ fn c_declarator_name<'a, 'n>(n: Node<'n>, src: &'a [u8]) -> Option<(&'a str, Nod
     }
 }
 
-fn walk_c(node: Node, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<Extracted>) {
+fn walk_c(node: Node, src: &[u8], scope: &mut Vec<String>, in_type: bool, out: &mut Vec<Extracted>) {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
             "function_definition" => {
                 if let Some(d) = child.child_by_field_name("declarator") {
                     if let Some((name, nn)) = c_declarator_name(d, src) {
-                        let kind = if scope.is_empty() { SymbolKind::Function } else { SymbolKind::Method };
+                        let kind = if in_type { SymbolKind::Method } else { SymbolKind::Function };
                         emit(out, name, scope, kind, child, Some(nn));
                     }
                 }
             }
-            "struct_specifier" | "union_specifier" => {
-                if let (Some(nn), Some(body)) = (child.child_by_field_name("name"), child.child_by_field_name("body")) {
+            "struct_specifier" | "union_specifier" | "class_specifier" => {
+                if let (Some(nn), Some(_)) = (child.child_by_field_name("name"), child.child_by_field_name("body")) {
                     let name = node_text(nn, src).to_string();
-                    emit(out, &name, scope, SymbolKind::Struct, child, Some(nn));
+                    let kind = if child.kind() == "class_specifier" { SymbolKind::Class } else { SymbolKind::Struct };
+                    emit(out, &name, scope, kind, child, Some(nn));
                     scope.push(name);
-                    let mut bc = body.walk();
-                    for f in body.named_children(&mut bc) {
-                        if f.kind() == "field_declaration" {
-                            if let Some(d) = f.child_by_field_name("declarator") {
-                                if let Some((fname, fnn)) = c_declarator_name(d, src) {
-                                    emit(out, fname, scope, SymbolKind::Field, f, Some(fnn));
-                                }
-                            }
-                        }
-                    }
+                    walk_c(child, src, scope, true, out);
                     scope.pop();
+                }
+            }
+            "namespace_definition" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    let name = node_text(nn, src).to_string();
+                    emit(out, &name, scope, SymbolKind::Module, child, Some(nn));
+                    scope.push(name);
+                    walk_c(child, src, scope, false, out);
+                    scope.pop();
+                } else {
+                    walk_c(child, src, scope, false, out);
+                }
+            }
+            "field_declaration" => {
+                if let Some(d) = child.child_by_field_name("declarator") {
+                    if let Some((name, nn)) = c_declarator_name(d, src) {
+                        let kind = if c_has_function_declarator(d) { SymbolKind::Method } else { SymbolKind::Field };
+                        emit(out, name, scope, kind, child, Some(nn));
+                    }
                 }
             }
             "enum_specifier" => {
@@ -601,15 +613,25 @@ fn walk_c(node: Node, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<Extract
                         emit(out, name, scope, SymbolKind::TypeAlias, child, Some(nn));
                     }
                 }
-                walk_c(child, src, scope, out);
+                walk_c(child, src, scope, in_type, out);
             }
             "preproc_function_def" | "preproc_def" => {
                 if let Some(nn) = child.child_by_field_name("name") {
                     emit(out, node_text(nn, src), scope, SymbolKind::Macro, child, Some(nn));
                 }
             }
-            _ => walk_c(child, src, scope, out),
+            _ => walk_c(child, src, scope, in_type, out),
         }
+    }
+}
+
+fn c_has_function_declarator(n: Node) -> bool {
+    if n.kind() == "function_declarator" {
+        return true;
+    }
+    match n.child_by_field_name("declarator") {
+        Some(d) => c_has_function_declarator(d),
+        None => false,
     }
 }
 
