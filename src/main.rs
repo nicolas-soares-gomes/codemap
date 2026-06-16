@@ -223,10 +223,11 @@ fn cmd_outline(root: &Path, file: &str) -> Result<()> {
 }
 
 fn cmd_read_symbol(root: &Path, id_arg: &str) -> Result<()> {
-    let db = open_existing(root)?;
+    let mut db = open_existing(root)?;
     let id = query::resolve_arg(&db, id_arg)?;
-    let c = query::read_symbol(&db, root, id)?;
-    println!("# sym:{} {}  {}:{}-{}", c.id, c.name_path, c.file, c.start_line, c.end_line);
+    let c = query::read_symbol(&mut db, root, id)?;
+    let state = if c.reindexed { " (reindexed)" } else { "" };
+    println!("# sym:{} {}  {}:{}-{}{}", c.id, c.name_path, c.file, c.start_line, c.end_line, state);
     for (i, line) in c.code.lines().enumerate() {
         println!("{:>5}  {line}", c.start_line as usize + i);
     }

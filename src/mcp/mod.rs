@@ -61,9 +61,9 @@ impl CodemapServer {
         description = "Return ONE symbol's code (its range only, not the whole file), with line numbers. The only tool that returns code — reach it via an id from resolve_symbol/get_callers."
     )]
     fn read_symbol(&self, Parameters(a): Parameters<SymbolArgs>) -> Result<String, String> {
-        let db = self.db()?;
+        let mut db = self.db()?;
         let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
-        let code = query::read_symbol(&db, &self.root, id).map_err(e)?;
+        let code = query::read_symbol(&mut db, &self.root, id).map_err(e)?;
         Ok(proj_read(&code))
     }
 
@@ -165,7 +165,8 @@ fn proj_edges(label: &str, root_id: i64, depth: i64, hits: &[EdgeHit]) -> String
 }
 
 fn proj_read(c: &Code) -> String {
-    let mut s = format!("# sym:{} {}  {}:{}-{}\n", c.id, c.name_path, c.file, c.start_line, c.end_line);
+    let state = if c.reindexed { " (reindexed)" } else { "" };
+    let mut s = format!("# sym:{} {}  {}:{}-{}{state}\n", c.id, c.name_path, c.file, c.start_line, c.end_line);
     for (i, line) in c.code.lines().enumerate() {
         s.push_str(&format!("{:>5}  {line}\n", c.start_line as usize + i));
     }

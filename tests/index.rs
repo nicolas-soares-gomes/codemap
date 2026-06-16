@@ -33,7 +33,7 @@ fn index_then_resolve_and_read() {
         .find(|h| h.name_path == "PaymentService/charge")
         .expect("charge resolved");
 
-    let code = query::read_symbol(&db, dir.path(), charge.id).unwrap();
+    let code = query::read_symbol(&mut db, dir.path(), charge.id).unwrap();
     assert!(code.code.contains("pub fn charge"));
     assert!(code.code.contains("amount"));
     assert!(!code.code.contains("struct PaymentService"), "must be only the method range");
@@ -67,6 +67,22 @@ fn symbol_id_is_stable_across_reindex() {
     assert_eq!(hit_after.len(), 1);
     assert_eq!(hit_after[0].id, id_before, "id must survive reindex");
     assert_eq!(hit_after[0].line, line_before + 1, "range must be refreshed");
+}
+
+#[test]
+fn read_symbol_staleness_guard_reindexes_inline() {
+    let (dir, mut db) = setup();
+    index::index_full(&mut db, dir.path()).unwrap();
+    let id = query::resolve(&db, "charge", 25).unwrap()[0].id;
+
+    // Edit the file on disk WITHOUT reindexing: prepend two lines (shifts ranges).
+    let shifted = format!("// a\n// b\n{SRC}");
+    std::fs::write(dir.path().join("src/pay.rs"), &shifted).unwrap();
+
+    let c = query::read_symbol(&mut db, dir.path(), id).unwrap();
+    assert!(c.reindexed, "should reindex inline on hash change");
+    assert!(c.code.contains("pub fn charge"), "must serve the correct (shifted) range");
+    assert!(!c.code.contains("struct PaymentService"));
 }
 
 #[test]

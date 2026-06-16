@@ -76,13 +76,24 @@ pub struct Code {
     pub start_line: u32,
     pub end_line: u32,
     pub code: String,
+    /// True if the file was reindexed inline because it had changed on disk.
+    pub reindexed: bool,
 }
 
-pub fn read_symbol(db: &Db, root: &Path, id: i64) -> Result<Code> {
-    let row = db
+struct SymRow {
+    name_path: String,
+    file: String,
+    start_line: u32,
+    end_line: u32,
+    offsets: Vec<u8>,
+    hash: Vec<u8>,
+}
+
+fn fetch_symbol(db: &Db, id: i64) -> Result<Option<SymRow>> {
+    Ok(db
         .conn
         .query_row(
-            "SELECT np.text, fp.text, s.start_line, s.end_line, li.offsets
+            "SELECT np.text, fp.text, s.start_line, s.end_line, li.offsets, f.content_hash
              FROM symbol s
              JOIN string_pool np ON np.id = s.name_path_sid
              JOIN file f         ON f.id  = s.file_id
@@ -91,30 +102,47 @@ pub fn read_symbol(db: &Db, root: &Path, id: i64) -> Result<Code> {
              WHERE s.id = ?1",
             [id],
             |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, u32>(2)?,
-                    r.get::<_, u32>(3)?,
-                    r.get::<_, Vec<u8>>(4)?,
-                ))
+                Ok(SymRow {
+                    name_path: r.get(0)?,
+                    file: r.get(1)?,
+                    start_line: r.get(2)?,
+                    end_line: r.get(3)?,
+                    offsets: r.get(4)?,
+                    hash: r.get(5)?,
+                })
             },
         )
-        .optional()?
-        .ok_or_else(|| anyhow!("symbol {id} not found"))?;
-    let (name_path, file, start_line, end_line, blob) = row;
-    let bytes = std::fs::read(root.join(&file))
-        .map_err(|e| anyhow!("read {file}: {e} (index may be stale — staleness guard lands in M4)"))?;
-    let offsets = line_index::decode(&blob);
-    let (b0, b1) = line_index::byte_span(&offsets, bytes.len() as u64, start_line, end_line);
+        .optional()?)
+}
+
+/// Staleness guard: validates the file's hash before serving. If the file changed on disk,
+/// reindexes that file inline (ids stay stable via symbol_key) and serves fresh; if the symbol
+/// no longer exists, returns a steering error instead of wrong code.
+pub fn read_symbol(db: &mut Db, root: &Path, id: i64) -> Result<Code> {
+    let mut row = fetch_symbol(db, id)?.ok_or_else(|| anyhow!("symbol {id} not found"))?;
+    let mut bytes = std::fs::read(root.join(&row.file)).map_err(|e| anyhow!("read {}: {e}", row.file))?;
+
+    let mut reindexed = false;
+    if blake3::hash(&bytes).as_bytes()[..] != row.hash[..] {
+        crate::index::reindex_file(db, root, &row.file)?;
+        reindexed = true;
+        row = fetch_symbol(db, id)?.ok_or_else(|| {
+            anyhow!("symbol {id} no longer exists after reindex — re-resolve by name_path")
+        })?;
+        bytes = std::fs::read(root.join(&row.file)).map_err(|e| anyhow!("read {}: {e}", row.file))?;
+    }
+
+    let offsets = line_index::decode(&row.offsets);
+    let (b0, b1) = line_index::byte_span(&offsets, bytes.len() as u64, row.start_line, row.end_line);
     let code = String::from_utf8_lossy(&bytes[b0 as usize..b1 as usize]).into_owned();
     Ok(Code {
         id,
-        name_path,
-        file,
-        start_line,
-        end_line,
+        name_path: row.name_path,
+        file: row.file,
+        start_line: row.start_line,
+        end_line: row.end_line,
         code,
+        reindexed,
     })
 }
 

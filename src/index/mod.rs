@@ -80,6 +80,32 @@ struct ExistingSymbol {
     name_path: String,
 }
 
+/// Reindex a single file in place (Tier0), preserving stable symbol ids. Prunes the file if
+/// it no longer exists. Used by the inline staleness guard.
+pub fn reindex_file(db: &mut Db, root: &Path, rel: &str) -> Result<()> {
+    let path = root.join(rel);
+    let Some(lang) = detect_lang(&path) else {
+        return Ok(());
+    };
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => {
+            let tx = db.conn.transaction()?;
+            writer::prune_file(&tx, rel)?;
+            tx.commit()?;
+            return Ok(());
+        }
+    };
+    let mtime_ns = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0);
+    let mut stats = IndexStats::default();
+    index_one(db, rel, lang, &bytes, mtime_ns, &mut stats)
+}
+
 fn index_one(
     db: &mut Db,
     rel: &str,
