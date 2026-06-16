@@ -25,7 +25,8 @@ against the file on disk first. Built as a single Rust crate (lib + bin).
 
 In a polyglot monorepo, each build root (`Cargo.toml`, `package.json`, `go.mod`, `pom.xml`,
 `*.csproj`, …) becomes an **index unit**. Generate one `.scip` per unit and ingest them together
-by repeating `--scip`; `codemap status` then reports SCIP coverage per unit.
+by repeating `--scip`; `codemap status` then reports per-unit resolution coverage (the share of
+files with edges confirmed by SCIP or a language server).
 
 ## Languages
 

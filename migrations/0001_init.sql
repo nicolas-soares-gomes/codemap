@@ -40,7 +40,6 @@ CREATE TABLE symbol (
   file_id       INTEGER NOT NULL REFERENCES file(id) ON DELETE CASCADE,
   name_sid      INTEGER NOT NULL REFERENCES string_pool(id),
   name_path_sid INTEGER NOT NULL REFERENCES string_pool(id),
-  scip_sym_sid  INTEGER REFERENCES string_pool(id),
   signature_sid INTEGER REFERENCES string_pool(id),
   kind          INTEGER NOT NULL,
   parent_id     INTEGER REFERENCES symbol(id) ON DELETE CASCADE,
@@ -56,7 +55,6 @@ CREATE INDEX        ix_symbol_file     ON symbol(file_id);
 CREATE INDEX        ix_symbol_name     ON symbol(name_sid);
 CREATE INDEX        ix_symbol_namepath ON symbol(name_path_sid);
 CREATE INDEX        ix_symbol_parent   ON symbol(parent_id);
-CREATE INDEX        ix_symbol_scip     ON symbol(scip_sym_sid) WHERE scip_sym_sid IS NOT NULL;
 
 CREATE TABLE occurrence (
   id           INTEGER PRIMARY KEY,

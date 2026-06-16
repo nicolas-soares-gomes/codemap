@@ -90,7 +90,6 @@ impl Db {
                  UNION SELECT index_unit_sid FROM file WHERE index_unit_sid IS NOT NULL
                  UNION SELECT name_sid FROM symbol
                  UNION SELECT name_path_sid FROM symbol
-                 UNION SELECT scip_sym_sid FROM symbol WHERE scip_sym_sid IS NOT NULL
                  UNION SELECT signature_sid FROM symbol WHERE signature_sid IS NOT NULL
              )",
             [],

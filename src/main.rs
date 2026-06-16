@@ -468,11 +468,11 @@ fn cmd_status(root: &Path) -> Result<()> {
         println!("  index units:");
         for u in &units {
             let pct = if u.files > 0 {
-                u.covered * 100 / u.files
+                u.resolved * 100 / u.files
             } else {
                 0
             };
-            println!("    {:<24} {} files, scip {}%", u.unit, u.files, pct);
+            println!("    {:<24} {} files, resolved {}%", u.unit, u.files, pct);
         }
     }
     Ok(())
@@ -481,17 +481,20 @@ fn cmd_status(root: &Path) -> Result<()> {
 struct UnitCoverage {
     unit: String,
     files: i64,
-    covered: i64,
+    resolved: i64,
 }
 
-/// Per-index-unit file count and SCIP coverage (a file is covered once any of its symbols maps
-/// to a SCIP symbol). Files map to "." when no build root was detected above them.
+/// Per-index-unit file count and precise-resolution coverage: a file counts as resolved once any
+/// of its symbols is an endpoint of an edge confirmed by SCIP or a language server (provenance 2
+/// or 3). Files map to "." when no build root was detected above them.
 fn index_units(db: &Db) -> Result<Vec<UnitCoverage>> {
     let mut stmt = db.conn.prepare(
         "SELECT COALESCE(u.text,'.') AS unit, count(*) AS files,
                 SUM(CASE WHEN EXISTS(
-                    SELECT 1 FROM symbol s WHERE s.file_id=f.id AND s.scip_sym_sid IS NOT NULL
-                ) THEN 1 ELSE 0 END) AS covered
+                    SELECT 1 FROM edge e JOIN symbol s
+                      ON s.id IN (e.source_symbol_id, e.target_symbol_id)
+                    WHERE s.file_id=f.id AND e.provenance IN (2, 3)
+                ) THEN 1 ELSE 0 END) AS resolved
          FROM file f LEFT JOIN string_pool u ON u.id=f.index_unit_sid
          GROUP BY unit ORDER BY files DESC, unit",
     )?;
@@ -499,7 +502,7 @@ fn index_units(db: &Db) -> Result<Vec<UnitCoverage>> {
         Ok(UnitCoverage {
             unit: r.get(0)?,
             files: r.get(1)?,
-            covered: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+            resolved: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
         })
     })?;
     let mut out = Vec::new();

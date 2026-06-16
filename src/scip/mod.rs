@@ -6,7 +6,7 @@
 //! edges are provenance=scip, resolution=resolved; for covered files they replace the
 //! tree-sitter (ambiguous) call edges.
 
-use crate::db::{writer, Db};
+use crate::db::Db;
 use crate::types::{EdgeKind, Provenance, Resolution, SymbolKind};
 use anyhow::{Context, Result};
 use protobuf::Message;
@@ -103,11 +103,6 @@ fn ingest_one(
                 continue;
             };
             if let Some(&(sid, kind)) = by_sel.get(&((line0 as u32) + 1)) {
-                let sym_sid = writer::intern(tx, &occ.symbol)?;
-                tx.execute(
-                    "UPDATE symbol SET scip_sym_sid=?2 WHERE id=?1",
-                    params![sid, sym_sid],
-                )?;
                 sym_map.insert(occ.symbol.clone(), (sid, kind));
             }
         }
