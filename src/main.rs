@@ -24,17 +24,42 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// Index (full, Tier0) all supported files under PATH.
+    /// Index state: commit, scan mode, counts, db size, SCIP coverage.
+    Status {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Remove files from the index that no longer exist on disk; --gc sweeps orphan strings.
+    Prune {
+        #[arg(long)]
+        gc: bool,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Delete the index (.codemap/index.db) — it is a rebuildable cache.
+    Reset {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Show a symbol's range/kind plus caller/callee counts.
+    Inspect {
+        symbol: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Print the external SCIP indexer command for a language (never runs it).
+    ScipCmd { lang: String },
+    /// Index all supported files under PATH (tree-sitter).
     Index {
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Only reindex files changed since the last index (mtime/size).
+        /// Only reindex files changed since the last run (git or mtime/size).
         #[arg(long)]
         incremental: bool,
-        /// After Tier0, ingest a SCIP index for resolved edges (Tier1).
+        /// Also ingest a SCIP index for precise edges (defaults to <PATH>/index.scip).
         #[arg(long)]
-        tier1: bool,
-        /// Path to the .scip file (default: <PATH>/index.scip with --tier1).
+        with_scip: bool,
+        /// Path to the .scip file (implies --with-scip).
         #[arg(long)]
         scip: Option<PathBuf>,
     },
@@ -180,12 +205,17 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Doctor => codemap::doctor::run(),
         Command::Init { path } => cmd_init(&path),
+        Command::Status { root } => cmd_status(&root),
+        Command::Prune { gc, root } => cmd_prune(&root, gc),
+        Command::Reset { path } => cmd_reset(&path),
+        Command::Inspect { symbol, root } => cmd_inspect(&root, &symbol),
+        Command::ScipCmd { lang } => cmd_scip_cmd(&lang),
         Command::Index {
             path,
             incremental,
-            tier1,
+            with_scip,
             scip,
-        } => cmd_index(&path, incremental, tier1, scip),
+        } => cmd_index(&path, incremental, with_scip, scip),
         Command::Resolve { query, limit, root } => cmd_resolve(&root, &query, limit),
         Command::Outline { file, root } => cmd_outline(&root, &file),
         Command::Search {
@@ -333,41 +363,124 @@ fn cmd_init(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_index(path: &Path, incremental: bool, tier1: bool, scip: Option<PathBuf>) -> Result<()> {
+fn cmd_status(root: &Path) -> Result<()> {
+    let db = open_existing(root)?;
+    let p = db_path(root);
+    let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+    let meta = |k: &str| db.get_meta(k).ok().flatten().unwrap_or_else(|| "-".into());
+    println!("codemap status ({})", p.display());
+    println!("  last commit:   {}", meta("indexed_commit"));
+    println!("  scan mode:     {}", meta("scanner_mode"));
+    println!("  scip coverage: {}", meta("scip_coverage"));
+    println!("  files:         {}", db.count("file")?);
+    println!("  symbols:       {}", db.count("symbol")?);
+    println!("  occurrences:   {}", db.count("occurrence")?);
+    println!("  call edges:    {}", db.count("edge")?);
+    println!("  index size:    {} KB", size / 1024);
+    Ok(())
+}
+
+fn cmd_prune(root: &Path, gc: bool) -> Result<()> {
+    let mut db = open_existing(root)?;
+    let pruned = codemap::index::prune(&mut db, root)?;
+    let mut msg = format!("codemap: pruned {pruned} missing file(s)");
+    if gc {
+        let swept = db.gc()?;
+        msg.push_str(&format!(", swept {swept} unused string(s)"));
+    }
+    println!("{msg}");
+    Ok(())
+}
+
+fn cmd_reset(path: &Path) -> Result<()> {
+    let p = db_path(path);
+    for suffix in ["", "-wal", "-shm"] {
+        let f = PathBuf::from(format!("{}{}", p.display(), suffix));
+        let _ = std::fs::remove_file(&f);
+    }
+    println!(
+        "codemap: index removed ({}) — rebuild with `codemap index`",
+        p.display()
+    );
+    Ok(())
+}
+
+fn cmd_inspect(root: &Path, symbol: &str) -> Result<()> {
+    let db = open_existing(root)?;
+    let id = query::resolve_arg(&db, symbol)?;
+    let (name_path, file, start, end, kind): (String, String, u32, u32, i64) = db.conn.query_row(
+        "SELECT np.text, fp.text, s.start_line, s.end_line, s.kind
+         FROM symbol s
+         JOIN string_pool np ON np.id = s.name_path_sid
+         JOIN file f         ON f.id  = s.file_id
+         JOIN string_pool fp ON fp.id = f.path_sid
+         WHERE s.id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )?;
+    let kind_s = codemap::types::SymbolKind::from_i64(kind)
+        .map(|k| format!("{k:?}").to_lowercase())
+        .unwrap_or_else(|| "?".into());
+    let callers = query::callers(&db, id, 1, 10_000)?.len();
+    let callees = query::callees(&db, id, 1, 10_000)?.len();
+    println!("# sym:{id} {name_path}");
+    println!("  {file}:{start}-{end}  ({kind_s})");
+    println!("  callers: {callers}  callees: {callees}");
+    Ok(())
+}
+
+fn cmd_scip_cmd(lang: &str) -> Result<()> {
+    match codemap::doctor::scip_cmd(lang) {
+        Some(s) => println!("{s}"),
+        None => bail!("unknown language: {lang}"),
+    }
+    Ok(())
+}
+
+fn cmd_index(path: &Path, incremental: bool, with_scip: bool, scip: Option<PathBuf>) -> Result<()> {
     std::fs::create_dir_all(path.join(".codemap"))?;
     let mut db = Db::open(&db_path(path))?;
     if incremental {
         let r = codemap::index::reconcile(&mut db, path)?;
         println!(
-            "codemap: incremental — {} changed, {} added, {} deleted, {} unchanged (Tier0)",
+            "codemap: incremental — {} changed, {} added, {} deleted, {} unchanged",
             r.changed, r.added, r.deleted, r.unchanged
         );
     } else {
         let stats = codemap::index::index_full(&mut db, path)?;
         let edges = codemap::index::resolve_calls(&mut db, path)?;
         println!(
-            "codemap: indexed {} files, {} symbols, {} call edges (Tier0)",
+            "codemap: indexed {} files, {} symbols, {} call edges",
             stats.files, stats.symbols, edges
         );
     }
 
-    if tier1 || scip.is_some() {
+    if with_scip || scip.is_some() {
         let scip_path = scip.unwrap_or_else(|| path.join("index.scip"));
         if !scip_path.exists() {
             bail!(
-                "Tier1 needs a SCIP index at {} — generate it yourself, then re-run with --scip <path>.\n\
-                 codemap never installs/runs the indexer. See `codemap doctor` for the per-language command.",
+                "no SCIP index at {} — generate it yourself, then re-run with --scip <path>.\n\
+                 codemap never runs the indexer. See `codemap scip-cmd <lang>` for the command.",
                 scip_path.display()
             );
         }
         let s = codemap::scip::ingest(&mut db, &scip_path)?;
         println!(
-            "codemap: Tier1 ingested {} ({} documents, {} files covered, {} resolved edges)",
+            "codemap: SCIP ingested {} ({} docs, {}/{} files covered = {}%, {} precise edges)",
             scip_path.display(),
             s.documents,
             s.covered_files,
+            s.total_files,
+            s.coverage_pct(),
             s.edges
         );
+        if s.coverage_pct() < 50 {
+            eprintln!(
+                "codemap: warning — low SCIP coverage ({}%). The indexer build may be incomplete; \
+                 uncovered files keep their tree-sitter results (marked ambiguous).",
+                s.coverage_pct()
+            );
+        }
     }
     Ok(())
 }

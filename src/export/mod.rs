@@ -1,4 +1,4 @@
-//! Subgraph export to text formats (DOT, Mermaid). SVG/HTML are out of MVP scope (SVG would
+//! Subgraph export to text formats (DOT, Mermaid). SVG/HTML are out of scope (SVG would
 //! need an external layout engine, which conflicts with the never-install policy).
 
 use crate::query::Subgraph;

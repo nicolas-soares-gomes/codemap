@@ -6,52 +6,55 @@ cheap in tokens, with **no manual grep** and **no confidence-based guessing**: e
 carries a `provenance` (tree_sitter | stack_graphs | scip | lsp | text) and a `resolution`
 (resolved | ambiguous | unresolved).
 
-## Status
+## How it works
 
-Work in progress.
+Three layers, each more precise and more optional than the last:
 
-- **M0 — Foundation** ✅: SQLite schema, core types, recursive-CTE traversal, migrations.
-- **M1 — Tier0 tree-sitter (Rust, dogfood)** ✅: extraction, full-scan indexer, resolve/read-symbol/outline.
-- **M2 — Graph + MCP + skills** ✅: stable SymbolId, Tier0 call edges, callers/callees, MCP server (rmcp/stdio), multi-platform skill installer.
-- **M3 — SCIP Tier1** ✅: `doctor` capability matrix + SCIP ingestion (resolved call edges; verified with real `rust-analyzer scip`).
-- **M4 — Incremental / watcher** ✅: git fast-path reconcile (diff `indexed_commit..HEAD`) + mtime/size fallback, toggleable watcher, inline staleness guard, git-hooks installer.
-- **M5 — Export / Docker / languages** ✅: DOT/Mermaid export, static musl Docker image (scratch, ~15 MB), 10 Tier0 languages.
+- **tree-sitter** (always on): parses every file for symbols, ranges, outlines, and syntactic
+  call edges. Works offline with zero setup.
+- **SCIP** (optional): ingests a `.scip` index produced by an external indexer
+  (`rust-analyzer scip`, `scip-typescript`, …) to upgrade call edges to precise/resolved.
+- **language server** (optional, on demand): precise edges for languages without a good SCIP indexer.
 
-All 10 MCP tools are implemented: `resolve_symbol`, `read_symbol`, `get_callers`, `get_callees`,
-`get_references`, `get_variables`, `trace_to_roots`, `impact`, `search_code`, `get_file_outline`.
+codemap **never installs** those external tools — it detects them and prints the command to run
+(`codemap doctor`, `codemap scip-cmd <lang>`).
 
-Tier0 languages: **Rust, TypeScript, Python, Go, Java, C#, PHP, C, C++, Swift** (each with a
-per-language extraction test). Kotlin and Clojure are blocked by their tree-sitter grammars
-(kotlin-ng mis-parses basic classes; tree-sitter-clojure pins an incompatible tree-sitter crate).
+Storage is a single on-disk SQLite file (`./.codemap/index.db`, WAL + FTS5). Navigation responses
+never include source code; only `read-symbol` returns code — just the symbol's range, re-checked
+against the file on disk first. Built as a single Rust crate (lib + bin).
 
-## Architecture
+## Languages
 
-Lean repo: a **single crate** (`codemap`, lib + bin), modules by responsibility.
-On-disk SQLite storage (WAL, FTS5). Tiers: tree-sitter (always) · SCIP (opt-in) · LSP (on demand).
+Rust, TypeScript, Python, Go, Java, C#, PHP, C, C++, Swift — each with its own extraction test.
+(Kotlin and Clojure are pending: their tree-sitter grammars need to be vendored.)
 
-Firm policy: codemap **never installs** LSP/SCIP — it detects and instructs (`codemap doctor`).
-
-## Usage (partial)
+## Commands
 
 ```
-codemap index              # build ./.codemap/index.db (Tier0)
-codemap resolve <name>     # name/name_path -> symbol ids
-codemap outline <file>     # file symbols, no code
-codemap read-symbol <id>   # one symbol's code (minimal range)
-codemap callers <sym>      # who calls a symbol (resolved edges)
+codemap index                          # build the index (tree-sitter)
+codemap index --incremental            # only reindex what changed (git or mtime/size)
+codemap index --with-scip --scip <f>   # also ingest a SCIP index for precise edges
+codemap resolve <name>     # name -> symbol ids
+codemap outline <file>     # symbols in a file
+codemap read-symbol <id>   # one symbol's code (its range only)
+codemap callers <sym>      # who calls a symbol
 codemap callees <sym>      # what a symbol calls
-codemap impact <sym>       # transitive callers — what breaks if you change it
-codemap trace <sym>        # call chain up to root entrypoints
-codemap refs <sym>         # references resolved to the enclosing symbol
-codemap variables <scope>  # fields/consts under a type/module
-codemap search <query>     # FTS5 symbol search
+codemap impact <sym>       # everything that breaks if you change it
+codemap trace <sym>        # call chain up to entrypoints
+codemap refs <sym>         # where a symbol is referenced
+codemap variables <scope>  # fields/consts in a type or module
+codemap search <query>     # search symbols by name
 codemap export <sym> --format dot|mermaid
-codemap index --incremental [--tier1 --scip <f>]
-codemap watch              # live incremental reindex
-codemap mcp                # MCP server over stdio (for agents)
-codemap install [--hooks]  # write the codemap skill into detected agent hosts
-codemap doctor             # detect-only diagnostics
+codemap watch              # reindex automatically as files change
+codemap mcp                # serve the tools to an AI agent over stdio
+codemap install [--hooks]  # teach your AI agent (Claude, Cursor, …) to use codemap
+codemap status | prune | reset | doctor
 ```
+
+## Agent tools (MCP)
+
+`resolve_symbol`, `read_symbol`, `get_callers`, `get_callees`, `get_references`, `get_variables`,
+`trace_to_roots`, `impact`, `search_code`, `get_file_outline`.
 
 ## License
 

@@ -1,5 +1,4 @@
-//! Tier0 extraction test for RUST (the "per-language test" pattern — each new language in
-//! M5 gets an analogous file).
+//! Symbol extraction test for RUST (one such file per supported language).
 
 use codemap::ts::{self, Extracted};
 use codemap::types::{Language, SymbolKind};

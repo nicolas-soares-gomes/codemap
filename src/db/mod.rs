@@ -81,6 +81,30 @@ impl Db {
             .optional()?)
     }
 
+    /// Sweep interned strings no longer referenced by any row (orphan GC; off the hot path).
+    /// Returns how many were removed.
+    pub fn gc(&self) -> Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM string_pool WHERE id NOT IN (
+                 SELECT path_sid FROM file
+                 UNION SELECT index_unit_sid FROM file WHERE index_unit_sid IS NOT NULL
+                 UNION SELECT name_sid FROM symbol
+                 UNION SELECT name_path_sid FROM symbol
+                 UNION SELECT scip_sym_sid FROM symbol WHERE scip_sym_sid IS NOT NULL
+                 UNION SELECT signature_sid FROM symbol WHERE signature_sid IS NOT NULL
+             )",
+            [],
+        )?;
+        Ok(n)
+    }
+
+    /// Row count of a known internal table (no user input).
+    pub fn count(&self, table: &str) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?)
+    }
+
     /// Forward traversal (callees): cycle-safe recursive CTE with depth cap and total limit.
     pub fn callees(
         &self,

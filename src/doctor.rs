@@ -1,90 +1,114 @@
-//! `codemap doctor` — detect-only diagnostics. Never installs anything (firm policy): it
-//! probes for external SCIP indexers / language servers and prints install tips.
+//! `codemap doctor` — read-only environment check. Never installs anything: it probes for the
+//! external tools that unlock precise results (SCIP indexers, language servers) and prints how
+//! to install them yourself.
 //!
-//! The CAPS table is the single source of truth for per-language capability, consumed by
-//! doctor (and, later, by Tier1/Tier2 resolution and steering errors).
+//! CAPS is the single source of truth for what each language supports:
+//!   - parse: tree-sitter (always available; gives structure/outline/ranges)
+//!   - scip:  an external indexer that produces a precise `.scip` (optional)
+//!   - lsp:   a language server used on demand for precise edges (optional)
 
 use anyhow::Result;
 use std::process::{Command, Stdio};
 
 struct LangCaps {
     lang: &'static str,
-    tier1_indexer: &'static str, // empty = no SCIP indexer
-    tier1_needs_build: bool,
-    tier1_bin: &'static str,
-    tier1_tip: &'static str,
-    tier2_lsp: &'static str,
-    tier2_bin: &'static str,
+    scip_indexer: &'static str, // empty = no SCIP indexer for this language
+    scip_needs_build: bool,
+    scip_bin: &'static str,
+    scip_tip: &'static str,
+    lsp_name: &'static str,
+    lsp_bin: &'static str,
 }
 
 const CAPS: &[LangCaps] = &[
-    LangCaps { lang: "rust", tier1_indexer: "rust-analyzer scip", tier1_needs_build: false, tier1_bin: "rust-analyzer", tier1_tip: "rustup component add rust-analyzer", tier2_lsp: "rust-analyzer", tier2_bin: "rust-analyzer" },
-    LangCaps { lang: "ts/js", tier1_indexer: "scip-typescript index", tier1_needs_build: false, tier1_bin: "scip-typescript", tier1_tip: "npm i -g @sourcegraph/scip-typescript", tier2_lsp: "typescript-language-server", tier2_bin: "typescript-language-server" },
-    LangCaps { lang: "python", tier1_indexer: "scip-python index", tier1_needs_build: false, tier1_bin: "scip-python", tier1_tip: "npm i -g @sourcegraph/scip-python", tier2_lsp: "pyright", tier2_bin: "pyright-langserver" },
-    LangCaps { lang: "go", tier1_indexer: "scip-go", tier1_needs_build: false, tier1_bin: "scip-go", tier1_tip: "go install github.com/sourcegraph/scip-go/cmd/scip-go@latest", tier2_lsp: "gopls", tier2_bin: "gopls" },
-    LangCaps { lang: "java", tier1_indexer: "scip-java index", tier1_needs_build: true, tier1_bin: "scip-java", tier1_tip: "cs install scip-java (needs JDK + gradle/maven; project must compile)", tier2_lsp: "jdtls", tier2_bin: "jdtls" },
-    LangCaps { lang: "c/c++", tier1_indexer: "scip-clang", tier1_needs_build: true, tier1_bin: "scip-clang", tier1_tip: "install scip-clang; needs compile_commands.json (cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)", tier2_lsp: "clangd", tier2_bin: "clangd" },
-    LangCaps { lang: "c#", tier1_indexer: "scip-dotnet index", tier1_needs_build: true, tier1_bin: "scip-dotnet", tier1_tip: "install scip-dotnet; needs .NET 8 SDK + restored solution", tier2_lsp: "csharp-ls", tier2_bin: "csharp-ls" },
-    LangCaps { lang: "kotlin", tier1_indexer: "scip-java (semanticdb)", tier1_needs_build: true, tier1_bin: "scip-java", tier1_tip: "scip-kotlin via SemanticDB plugin; needs compiling build", tier2_lsp: "kotlin-lsp", tier2_bin: "kotlin-lsp" },
-    LangCaps { lang: "php", tier1_indexer: "scip-php (3rd-party)", tier1_needs_build: false, tier1_bin: "scip-php", tier1_tip: "composer require --dev davidrjenni/scip-php", tier2_lsp: "intelephense", tier2_bin: "intelephense" },
-    LangCaps { lang: "swift", tier1_indexer: "", tier1_needs_build: false, tier1_bin: "", tier1_tip: "no SCIP indexer; use sourcekit-lsp (Tier2)", tier2_lsp: "sourcekit-lsp", tier2_bin: "sourcekit-lsp" },
-    LangCaps { lang: "clojure", tier1_indexer: "", tier1_needs_build: false, tier1_bin: "", tier1_tip: "no SCIP indexer; clj-kondo bridge is opt-in (post-MVP)", tier2_lsp: "clojure-lsp", tier2_bin: "clojure-lsp" },
+    LangCaps { lang: "rust", scip_indexer: "rust-analyzer scip", scip_needs_build: false, scip_bin: "rust-analyzer", scip_tip: "rustup component add rust-analyzer", lsp_name: "rust-analyzer", lsp_bin: "rust-analyzer" },
+    LangCaps { lang: "ts/js", scip_indexer: "scip-typescript index", scip_needs_build: false, scip_bin: "scip-typescript", scip_tip: "npm i -g @sourcegraph/scip-typescript", lsp_name: "typescript-language-server", lsp_bin: "typescript-language-server" },
+    LangCaps { lang: "python", scip_indexer: "scip-python index", scip_needs_build: false, scip_bin: "scip-python", scip_tip: "npm i -g @sourcegraph/scip-python", lsp_name: "pyright", lsp_bin: "pyright-langserver" },
+    LangCaps { lang: "go", scip_indexer: "scip-go", scip_needs_build: false, scip_bin: "scip-go", scip_tip: "go install github.com/sourcegraph/scip-go/cmd/scip-go@latest", lsp_name: "gopls", lsp_bin: "gopls" },
+    LangCaps { lang: "java", scip_indexer: "scip-java index", scip_needs_build: true, scip_bin: "scip-java", scip_tip: "cs install scip-java (needs JDK + gradle/maven; project must compile)", lsp_name: "jdtls", lsp_bin: "jdtls" },
+    LangCaps { lang: "c/c++", scip_indexer: "scip-clang", scip_needs_build: true, scip_bin: "scip-clang", scip_tip: "install scip-clang; needs compile_commands.json (cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON)", lsp_name: "clangd", lsp_bin: "clangd" },
+    LangCaps { lang: "c#", scip_indexer: "scip-dotnet index", scip_needs_build: true, scip_bin: "scip-dotnet", scip_tip: "install scip-dotnet; needs .NET 8 SDK + restored solution", lsp_name: "csharp-ls", lsp_bin: "csharp-ls" },
+    LangCaps { lang: "kotlin", scip_indexer: "scip-java (semanticdb)", scip_needs_build: true, scip_bin: "scip-java", scip_tip: "scip-kotlin via SemanticDB plugin; needs a compiling build", lsp_name: "kotlin-lsp", lsp_bin: "kotlin-lsp" },
+    LangCaps { lang: "php", scip_indexer: "scip-php (3rd-party)", scip_needs_build: false, scip_bin: "scip-php", scip_tip: "composer require --dev davidrjenni/scip-php", lsp_name: "intelephense", lsp_bin: "intelephense" },
+    LangCaps { lang: "swift", scip_indexer: "", scip_needs_build: false, scip_bin: "", scip_tip: "no SCIP indexer; use sourcekit-lsp", lsp_name: "sourcekit-lsp", lsp_bin: "sourcekit-lsp" },
+    LangCaps { lang: "clojure", scip_indexer: "", scip_needs_build: false, scip_bin: "", scip_tip: "no SCIP indexer; use clojure-lsp", lsp_name: "clojure-lsp", lsp_bin: "clojure-lsp" },
 ];
 
+/// The external SCIP indexer command + install tip for a language (codemap never runs it).
+pub fn scip_cmd(lang: &str) -> Option<String> {
+    let c = CAPS
+        .iter()
+        .find(|c| c.lang == lang || c.lang.split('/').any(|x| x == lang))?;
+    Some(if c.scip_indexer.is_empty() {
+        format!(
+            "{}: no SCIP indexer — use the language server {}",
+            c.lang, c.lsp_name
+        )
+    } else {
+        let build = if c.scip_needs_build {
+            " [needs a working build]"
+        } else {
+            ""
+        };
+        format!(
+            "{}: run `{}`{build}\n  install: {}",
+            c.lang, c.scip_indexer, c.scip_tip
+        )
+    })
+}
+
 pub fn run() -> Result<()> {
-    println!("codemap doctor (detect-only — never installs)");
+    println!("codemap doctor (read-only — never installs anything)");
     println!("  schema_version: {}", crate::db::SCHEMA_VERSION);
     println!("  git: {}", state(present("git")));
     println!();
-    println!(
-        "  {:<8} {:<6} {:<18} tier2 (LSP)",
-        "lang", "tier0", "tier1 (SCIP)"
-    );
+    println!("  parse = tree-sitter (always on)   scip = precise index (optional)   lsp = language server (optional)");
+    println!("  {:<8} {:<6} {:<18} lsp", "lang", "parse", "scip");
     let mut tips: Vec<String> = Vec::new();
     for c in CAPS {
-        let (t1, tip) = tier1_state(c);
+        let (scip, tip) = scip_state(c);
         if let Some(tip) = tip {
             tips.push(tip);
         }
-        let t2 = if c.tier2_bin.is_empty() {
+        let lsp = if c.lsp_bin.is_empty() {
             "-".to_string()
-        } else if present(c.tier2_bin) {
-            format!("{} ok", c.tier2_lsp)
+        } else if present(c.lsp_bin) {
+            format!("{} ok", c.lsp_name)
         } else {
-            format!("{} missing", c.tier2_lsp)
+            format!("{} missing", c.lsp_name)
         };
-        // Kotlin/Clojure have no compatible tree-sitter grammar yet (pre-1.0 / version pin).
-        let t0 = if matches!(c.lang, "kotlin" | "clojure") {
+        // Kotlin/Clojure have no working tree-sitter grammar wired yet.
+        let parse = if matches!(c.lang, "kotlin" | "clojure") {
             "n/a"
         } else {
             "ok"
         };
-        println!("  {:<8} {:<6} {:<18} {}", c.lang, t0, t1, t2);
+        println!("  {:<8} {:<6} {:<18} {}", c.lang, parse, scip, lsp);
     }
     if !tips.is_empty() {
         println!(
-            "\n  tips for missing Tier1 indexers (run them yourself; codemap never installs):"
+            "\n  to enable precise results, run these yourself (codemap never installs them):"
         );
         for t in tips {
             println!("    - {t}");
         }
     }
-    println!("\n  Missing Tier1/Tier2 is fine — codemap works on Tier0 (tree-sitter) alone.");
+    println!("\n  Missing scip/lsp is fine — codemap works on tree-sitter alone.");
     Ok(())
 }
 
-/// Short matrix cell + an optional install tip for the tips section.
-fn tier1_state(c: &LangCaps) -> (String, Option<String>) {
-    if c.tier1_bin.is_empty() {
+/// Short matrix cell for the scip column + an optional install tip.
+fn scip_state(c: &LangCaps) -> (String, Option<String>) {
+    if c.scip_bin.is_empty() {
         return ("none".into(), None);
     }
-    let build = if c.tier1_needs_build { "/build" } else { "" };
-    if present(c.tier1_bin) {
+    let build = if c.scip_needs_build { "/build" } else { "" };
+    if present(c.scip_bin) {
         (format!("ok{build}"), None)
     } else {
         (
             format!("missing{build}"),
-            Some(format!("{}: {}", c.lang, c.tier1_tip)),
+            Some(format!("{}: {}", c.lang, c.scip_tip)),
         )
     }
 }

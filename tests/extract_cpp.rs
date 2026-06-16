@@ -1,4 +1,4 @@
-//! Tier0 extraction test for C++ (per-language test pattern; shares the C walker).
+//! Symbol extraction test for C++ (per-language test pattern; shares the C walker).
 
 use codemap::ts::{self, Extracted};
 use codemap::types::{Language, SymbolKind};

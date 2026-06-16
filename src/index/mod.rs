@@ -1,6 +1,6 @@
-//! Tier0 full-scan indexing. Walks honoring .gitignore + .codemapignore, parses with
-//! tree-sitter, and reconciles each file by `symbol_key` so symbol ids stay stable across
-//! reindex. Incremental (git/mtime) and parallelism (rayon) land in M4.
+//! Full-scan indexing. Walks honoring .gitignore + .codemapignore, parses with tree-sitter,
+//! and reconciles each file by `symbol_key` so symbol ids stay stable across reindex.
+//! Incremental updates use git (or an mtime/size fallback) — see `reconcile`.
 
 use crate::db::{line_index, writer, Db};
 use crate::ts;
@@ -89,7 +89,7 @@ struct ExistingSymbol {
     name_path: String,
 }
 
-/// Reindex a single file in place (Tier0), preserving stable symbol ids. Prunes the file if
+/// Reindex a single file in place, preserving stable symbol ids. Prunes the file if
 /// it no longer exists. Used by the inline staleness guard.
 pub fn reindex_file(db: &mut Db, root: &Path, rel: &str) -> Result<()> {
     let path = root.join(rel);
@@ -259,7 +259,7 @@ fn index_one(
     Ok(())
 }
 
-/// Pass 2: extract call sites and build Tier0 call edges. Syntactic name resolution only,
+/// Pass 2: extract call sites and build syntactic call edges. Name-based resolution only,
 /// so edges are provenance=tree_sitter, resolution=ambiguous. Must run after all definitions
 /// are indexed. Idempotent: clears each file's prior call edges/occurrences first.
 pub fn resolve_calls(db: &mut Db, root: &Path) -> Result<u64> {
@@ -408,6 +408,21 @@ pub fn reconcile(db: &mut Db, root: &Path) -> Result<ReconcileStats> {
         db.set_meta("scanner_mode", "fs")?;
     }
     Ok(stats)
+}
+
+/// Remove from the index every file that no longer exists on disk. Returns how many were pruned.
+pub fn prune(db: &mut Db, root: &Path) -> Result<u64> {
+    let snapshot = file_snapshot(db)?;
+    let mut n = 0;
+    for rel in snapshot.keys() {
+        if !root.join(rel).exists() {
+            let tx = db.conn.transaction()?;
+            writer::prune_file(&tx, rel)?;
+            tx.commit()?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Incremental reconcile using git's diff between the indexed commit and HEAD plus the working

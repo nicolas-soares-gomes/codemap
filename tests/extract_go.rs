@@ -1,4 +1,4 @@
-//! Tier0 extraction test for GO (per-language test pattern).
+//! Symbol extraction test for GO (per-language test pattern).
 
 use codemap::ts::{self, Extracted};
 use codemap::types::{Language, SymbolKind};

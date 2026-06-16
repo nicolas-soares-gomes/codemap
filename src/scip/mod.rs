@@ -1,10 +1,10 @@
-//! Tier1 — ingest a SCIP index produced by an external indexer (e.g. `rust-analyzer scip`,
-//! `scip-typescript`). codemap NEVER generates it (firm policy); it only consumes the file.
+//! Ingest a SCIP index produced by an external indexer (e.g. `rust-analyzer scip`,
+//! `scip-typescript`). codemap never generates it — it only reads the `.scip` file.
 //!
-//! SCIP gives occurrences, not a call graph: callers/callees are DERIVED by intersecting
-//! reference occurrences with the enclosing-symbol ranges from Tier0. Resulting edges are
-//! provenance=scip, resolution=resolved. For files the SCIP index covers, the syntactic
-//! Tier0 call edges are replaced by these resolved edges.
+//! SCIP records occurrences, not a call graph, so call edges are derived by intersecting
+//! reference occurrences with the enclosing-symbol ranges from the tree-sitter pass. Derived
+//! edges are provenance=scip, resolution=resolved; for covered files they replace the
+//! tree-sitter (ambiguous) call edges.
 
 use crate::db::{writer, Db};
 use crate::types::{EdgeKind, Provenance, Resolution, SymbolKind};
@@ -20,7 +20,17 @@ const ROLE_DEFINITION: i32 = 1; // SymbolRole::Definition bit
 pub struct ScipStats {
     pub documents: usize,
     pub covered_files: usize,
+    pub total_files: usize,
     pub edges: u64,
+}
+
+impl ScipStats {
+    /// Percentage of indexed files the SCIP index covers (0 if none indexed).
+    pub fn coverage_pct(&self) -> u32 {
+        (self.covered_files * 100)
+            .checked_div(self.total_files)
+            .unwrap_or(0) as u32
+    }
 }
 
 pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
@@ -64,7 +74,7 @@ pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
         }
     }
 
-    // For covered files, SCIP is authoritative: drop the syntactic Tier0 call edges.
+    // For covered files, SCIP is authoritative: drop the syntactic tree-sitter call edges.
     for &fid in &covered {
         tx.execute(
             "DELETE FROM edge WHERE kind=?1 AND provenance!=?2
@@ -104,8 +114,19 @@ pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
     }
 
     stats.covered_files = covered.len();
+    stats.total_files =
+        tx.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))? as usize;
     tx.commit()?;
-    db.set_meta("tier1_scip_at", &scip_path.to_string_lossy())?;
+    db.set_meta("scip_at", &scip_path.to_string_lossy())?;
+    db.set_meta(
+        "scip_coverage",
+        &format!(
+            "{}/{} ({}%)",
+            stats.covered_files,
+            stats.total_files,
+            stats.coverage_pct()
+        ),
+    )?;
     Ok(stats)
 }
 

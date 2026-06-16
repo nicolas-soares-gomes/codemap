@@ -1,4 +1,4 @@
-//! Schema-level tests proving the adversarial-review fixes. If any fails, the schema
+//! Schema-level regression tests for the storage invariants. If any fails, the schema
 //! foundation is broken.
 
 use codemap::db::Db;
@@ -51,7 +51,7 @@ fn add_edge(db: &Db, src: i64, tgt: i64, kind: EdgeKind) {
         .unwrap();
 }
 
-// Fix #2: a Tier0 edge with no call-site must insert.
+// A call edge with no recorded call-site must still insert (most syntactic edges have none).
 #[test]
 fn edge_without_callsite_inserts() {
     let db = Db::open_in_memory().unwrap();
@@ -67,7 +67,7 @@ fn edge_without_callsite_inserts() {
     assert_eq!(n, 1);
 }
 
-// Fix #1: a range with col > 4096 must not corrupt (bit-packing would).
+// A range with col > 4096 must round-trip exactly (separate columns, not bit-packed).
 #[test]
 fn range_col_over_4096_roundtrips_exactly() {
     let db = Db::open_in_memory().unwrap();
@@ -85,7 +85,7 @@ fn range_col_over_4096_roundtrips_exactly() {
     assert_eq!((line, col), (100, 5000));
 }
 
-// Fix #4: contentless FTS5 has no orphan after a correct prune.
+// The contentless FTS5 index must have no orphan rows after a correct prune.
 #[test]
 fn fts5_no_orphan_when_pruned_correctly() {
     let db = Db::open_in_memory().unwrap();

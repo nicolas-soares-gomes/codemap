@@ -1,5 +1,5 @@
-//! Tier0 query engine: resolve_symbol, get_file_outline, read_symbol. Compact projection,
-//! callers/callees and inline staleness guard land in M2/M4.
+//! Query engine: resolve_symbol, read_symbol, outline, callers/callees, references, search.
+//! Code is read on demand and re-validated against the file on disk before being served.
 
 use crate::db::{line_index, Db};
 use crate::types::{Provenance, Resolution, Role, SymbolKind};

@@ -1,5 +1,5 @@
-//! Tier0 symbol extraction via tree-sitter. M1: Rust. Other languages land in M5, each
-//! with its own extractor and extraction test.
+//! Symbol extraction via tree-sitter. Each supported language has its own walker plus an
+//! extraction test; unsupported languages return nothing.
 
 use crate::types::{Language, Range, SymbolKind};
 use tree_sitter::{Node, Parser};
