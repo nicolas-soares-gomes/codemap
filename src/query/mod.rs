@@ -19,6 +19,7 @@ pub struct Hit {
     pub name_path: String,
     pub file: String,
     pub line: u32,
+    pub end_line: u32,
     pub kind: Option<SymbolKind>,
 }
 
@@ -40,7 +41,7 @@ pub fn resolve_arg(db: &Db, arg: &str) -> Result<i64> {
 
 pub fn resolve(db: &Db, query: &str, limit: i64) -> Result<Vec<Hit>> {
     let mut stmt = db.conn.prepare(
-        "SELECT s.id, np.text, fp.text, s.start_line, s.kind
+        "SELECT s.id, np.text, fp.text, s.start_line, s.end_line, s.kind
          FROM symbol s
          JOIN string_pool n  ON n.id  = s.name_sid
          JOIN string_pool np ON np.id = s.name_path_sid
@@ -58,7 +59,7 @@ pub fn resolve(db: &Db, query: &str, limit: i64) -> Result<Vec<Hit>> {
 
 pub fn outline(db: &Db, file: &str) -> Result<Vec<Hit>> {
     let mut stmt = db.conn.prepare(
-        "SELECT s.id, np.text, fp.text, s.start_line, s.kind
+        "SELECT s.id, np.text, fp.text, s.start_line, s.end_line, s.kind
          FROM symbol s
          JOIN string_pool np ON np.id = s.name_path_sid
          JOIN file f         ON f.id  = s.file_id
@@ -161,6 +162,7 @@ pub struct EdgeHit {
     pub name_path: String,
     pub file: String,
     pub line: u32,
+    pub end_line: u32,
     pub kind: Option<SymbolKind>,
     pub depth: i64,
     pub provenance: Option<Provenance>,
@@ -196,7 +198,7 @@ fn walk(db: &Db, root_id: i64, depth: i64, limit: i64, forward: bool) -> Result<
              SELECT sym, depth, prov, res, ROW_NUMBER() OVER (PARTITION BY sym ORDER BY depth) rn
              FROM bounded
          )
-         SELECT b.sym, np.text, fp.text, s.start_line, s.kind, b.depth, b.prov, b.res
+         SELECT b.sym, np.text, fp.text, s.start_line, s.end_line, s.kind, b.depth, b.prov, b.res
          FROM best b
          JOIN symbol s       ON s.id  = b.sym
          JOIN string_pool np ON np.id = s.name_path_sid
@@ -214,10 +216,11 @@ fn walk(db: &Db, root_id: i64, depth: i64, limit: i64, forward: bool) -> Result<
                 name_path: r.get(1)?,
                 file: r.get(2)?,
                 line: r.get(3)?,
-                kind: SymbolKind::from_i64(r.get(4)?),
-                depth: r.get(5)?,
-                provenance: Provenance::from_i64(r.get(6)?),
-                resolution: Resolution::from_i64(r.get(7)?),
+                end_line: r.get(4)?,
+                kind: SymbolKind::from_i64(r.get(5)?),
+                depth: r.get(6)?,
+                provenance: Provenance::from_i64(r.get(7)?),
+                resolution: Resolution::from_i64(r.get(8)?),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -353,7 +356,7 @@ pub fn references(db: &Db, symbol_id: i64, limit: i64) -> Result<Vec<RefHit>> {
 pub fn variables(db: &Db, scope: &str, limit: i64) -> Result<Vec<Hit>> {
     let prefix = format!("{scope}/");
     let mut stmt = db.conn.prepare(
-        "SELECT s.id, np.text, fp.text, s.start_line, s.kind
+        "SELECT s.id, np.text, fp.text, s.start_line, s.end_line, s.kind
          FROM symbol s
          JOIN string_pool np ON np.id = s.name_path_sid
          JOIN file f         ON f.id  = s.file_id
@@ -399,7 +402,7 @@ pub fn search(db: &Db, query: &str, mode: &str, limit: i64) -> Result<Vec<Hit>> 
         return search_substring(db, &term, limit);
     }
     let mut stmt = db.conn.prepare(
-        "SELECT s.id, np.text, fp.text, s.start_line, s.kind
+        "SELECT s.id, np.text, fp.text, s.start_line, s.end_line, s.kind
          FROM symbol_fts
          JOIN symbol s       ON s.id  = symbol_fts.rowid
          JOIN string_pool np ON np.id = s.name_path_sid
@@ -419,7 +422,7 @@ pub fn search(db: &Db, query: &str, mode: &str, limit: i64) -> Result<Vec<Hit>> 
 fn search_substring(db: &Db, term: &str, limit: i64) -> Result<Vec<Hit>> {
     let pattern = format!("%{}%", term.replace('_', "\\_"));
     let mut stmt = db.conn.prepare(
-        "SELECT s.id, np.text, fp.text, s.start_line, s.kind
+        "SELECT s.id, np.text, fp.text, s.start_line, s.end_line, s.kind
          FROM symbol s
          JOIN string_pool n  ON n.id  = s.name_sid
          JOIN string_pool np ON np.id = s.name_path_sid
@@ -440,7 +443,8 @@ fn row_to_hit(r: &rusqlite::Row) -> rusqlite::Result<Hit> {
         name_path: r.get(1)?,
         file: r.get(2)?,
         line: r.get(3)?,
-        kind: SymbolKind::from_i64(r.get(4)?),
+        end_line: r.get(4)?,
+        kind: SymbolKind::from_i64(r.get(5)?),
     })
 }
 

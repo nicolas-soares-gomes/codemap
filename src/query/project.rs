@@ -57,11 +57,12 @@ fn assemble(label: &str, fields: &str, rows: Vec<String>, limit_cut: bool, next:
 
 fn hit_row(h: &Hit) -> String {
     format!(
-        "sym:{} | {} | {}:{} | {}",
+        "sym:{} | {} | {}:{}-{} | {}",
         h.id,
         h.name_path,
         h.file,
         h.line,
+        h.end_line,
         kind_label(h.kind)
     )
 }
@@ -72,11 +73,12 @@ fn edge_row(h: &EdgeHit) -> String {
         _ => "-".into(),
     };
     format!(
-        "sym:{} | {} | {}:{} | {} | {} | {}",
+        "sym:{} | {} | {}:{}-{} | {} | {} | {}",
         h.id,
         h.name_path,
         h.file,
         h.line,
+        h.end_line,
         kind_label(h.kind),
         h.depth,
         pr
@@ -93,8 +95,8 @@ fn capped<T>(mut rows: Vec<T>, limit: i64) -> (Vec<T>, bool) {
     }
 }
 
-const HITS_FIELDS: &str = "id | name_path | file:line | kind";
-const EDGES_FIELDS: &str = "id | name_path | file:line | kind | depth | prov/res";
+const HITS_FIELDS: &str = "id | name_path | file:start-end | kind";
+const EDGES_FIELDS: &str = "id | name_path | file:start-end | kind | depth | prov/res";
 
 pub fn resolve(db: &Db, query: &str, limit: i64) -> Result<String> {
     let (hits, cut) = capped(super::resolve(db, query, limit + 1)?, limit);
