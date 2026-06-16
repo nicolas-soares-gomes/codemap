@@ -88,6 +88,11 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Watch the repo and incrementally reindex on changes (Ctrl-C to stop).
+    Watch {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Run the MCP server over stdio (tools for AI agents).
     Mcp {
         #[arg(long, default_value = ".")]
@@ -133,6 +138,10 @@ fn main() -> Result<()> {
         Command::Callers { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, false),
         Command::Callees { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, true),
         Command::Export { symbol, format, depth, callers, root } => cmd_export(&root, &symbol, &format, depth, callers),
+        Command::Watch { path } => {
+            std::fs::create_dir_all(path.join(".codemap"))?;
+            codemap::index::watch(&path)
+        }
         Command::Mcp { root } => cmd_mcp(&root),
         Command::Install { targets, list, hooks, root } => cmd_install(&root, &targets, list, hooks),
         Command::Uninstall { targets, hooks, root } => cmd_uninstall(&root, &targets, hooks),

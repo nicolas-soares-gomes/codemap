@@ -22,6 +22,8 @@ tree-sitter-typescript = "0.23"
 tree-sitter-python = "0.25"
 tree-sitter-go = "0.25"
 ignore = "0.4"
+notify = "8"
+notify-debouncer-full = "0.5"
 blake3 = "1.8"
 rmcp = { version = "1.7", features = ["server", "macros", "transport-io", "schemars"] }
 schemars = "1"

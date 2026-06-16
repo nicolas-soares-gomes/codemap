@@ -10,7 +10,7 @@ use ignore::WalkBuilder;
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_FILE: usize = 2 * 1024 * 1024;
 const MAX_CALL_CANDIDATES: i64 = 8;
@@ -373,6 +373,54 @@ pub fn reconcile(db: &mut Db, root: &Path) -> Result<ReconcileStats> {
 
 /// path -> (mtime_ns, size, content_hash)
 type FileSnapshot = HashMap<String, (i64, i64, Vec<u8>)>;
+
+/// True if a path is inside an internal/ignored dir we must not react to (avoids reindex loops).
+fn is_internal(p: &Path) -> bool {
+    let s = p.to_string_lossy();
+    s.contains("/.codemap/") || s.contains("/.git/") || s.contains("/target/")
+}
+
+/// Toggleable watcher: reconciles once on startup, then on debounced filesystem changes.
+/// Blocks until the channel closes (Ctrl-C). Events under .codemap/.git/target are ignored.
+pub fn watch(root: &Path) -> Result<()> {
+    use notify::RecursiveMode;
+    use notify_debouncer_full::new_debouncer;
+
+    {
+        let mut db = Db::open(&root.join(".codemap").join("index.db"))?;
+        reconcile(&mut db, root)?;
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut debouncer = new_debouncer(Duration::from_millis(500), None, tx)?;
+    debouncer.watch(root, RecursiveMode::Recursive)?;
+    eprintln!("codemap: watching {} (Ctrl-C to stop)", root.display());
+
+    for result in rx {
+        let events = match result {
+            Ok(events) => events,
+            Err(errs) => {
+                eprintln!("codemap: watch error: {errs:?}");
+                continue;
+            }
+        };
+        let relevant = events
+            .iter()
+            .any(|e| e.paths.iter().any(|p| !is_internal(p)));
+        if !relevant {
+            continue;
+        }
+        let mut db = Db::open(&root.join(".codemap").join("index.db"))?;
+        match reconcile(&mut db, root) {
+            Ok(s) => eprintln!(
+                "codemap: reconciled ({} changed, {} added, {} deleted)",
+                s.changed, s.added, s.deleted
+            ),
+            Err(e) => eprintln!("codemap: reconcile error: {e}"),
+        }
+    }
+    Ok(())
+}
 
 fn file_snapshot(db: &Db) -> Result<FileSnapshot> {
     let mut stmt = db.conn.prepare(
