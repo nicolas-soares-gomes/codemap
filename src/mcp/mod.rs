@@ -198,6 +198,31 @@ pub async fn serve_stdio(root: PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Serve the same tools over streamable HTTP at `addr` (path `/mcp`).
+#[cfg(feature = "mcp-http")]
+pub async fn serve_http(root: PathBuf, addr: std::net::SocketAddr) -> anyhow::Result<()> {
+    use rmcp::transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    };
+    use std::sync::Arc;
+
+    // Stateless + plain JSON responses: each tool call is one self-contained request/response,
+    // which keeps the index read-only and avoids per-session SSE bookkeeping.
+    let config = StreamableHttpServerConfig::default()
+        .with_stateful_mode(false)
+        .with_json_response(true);
+    let service = StreamableHttpService::new(
+        move || Ok(CodemapServer::new(root.clone())),
+        Arc::new(LocalSessionManager::default()),
+        config,
+    );
+    let app = axum::Router::new().route_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    eprintln!("codemap: MCP server on http://{addr}/mcp (Ctrl-C to stop)");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
 fn e<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }

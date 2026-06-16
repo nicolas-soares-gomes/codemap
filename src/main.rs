@@ -170,10 +170,16 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// Run the MCP server over stdio (tools for AI agents).
+    /// Run the MCP server (stdio by default; --http needs the `mcp-http` feature).
     Mcp {
         #[arg(long, default_value = ".")]
         root: PathBuf,
+        /// Serve over HTTP instead of stdio (requires building with --features mcp-http).
+        #[arg(long)]
+        http: bool,
+        /// HTTP listen address when --http is set.
+        #[arg(long, default_value = "127.0.0.1:8765")]
+        addr: String,
     },
     /// Install the codemap skill into detected agent hosts (writes text files only).
     Install {
@@ -280,7 +286,7 @@ fn main() -> Result<()> {
             std::fs::create_dir_all(path.join(".codemap"))?;
             codemap::index::watch(&path)
         }
-        Command::Mcp { root } => cmd_mcp(&root),
+        Command::Mcp { root, http, addr } => cmd_mcp(&root, http, &addr),
         Command::Install {
             targets,
             list,
@@ -378,8 +384,20 @@ fn cmd_export(root: &Path, symbol: &str, format: &str, depth: i64, callers: bool
     Ok(())
 }
 
-fn cmd_mcp(root: &Path) -> Result<()> {
+fn cmd_mcp(root: &Path, http: bool, addr: &str) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
+    if http {
+        #[cfg(feature = "mcp-http")]
+        {
+            let sa: std::net::SocketAddr = addr.parse()?;
+            return rt.block_on(codemap::mcp::serve_http(root.to_path_buf(), sa));
+        }
+        #[cfg(not(feature = "mcp-http"))]
+        {
+            let _ = addr;
+            bail!("--http requires building codemap with --features mcp-http");
+        }
+    }
     rt.block_on(codemap::mcp::serve_stdio(root.to_path_buf()))
 }
 
