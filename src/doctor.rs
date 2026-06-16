@@ -142,6 +142,17 @@ pub fn run(root: &Path) -> Result<()> {
             println!("    - {t}");
         }
     }
+
+    // In a monorepo, each build root is its own index unit — generate one .scip per unit and
+    // ingest them together with repeated `--scip` flags.
+    let units = crate::index::detect_index_units(root);
+    if units.len() > 1 {
+        println!("\n  build roots (index units) — generate a .scip per unit:");
+        for (path, kind) in &units {
+            println!("    {path:<28} ({kind})");
+        }
+    }
+
     println!("\n  Missing scip/lsp is fine — codemap works on tree-sitter alone.");
     Ok(())
 }

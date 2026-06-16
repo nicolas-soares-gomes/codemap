@@ -8,8 +8,8 @@ use crate::types::{EdgeKind, Language, Provenance, Resolution, Role, SymbolKind}
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use rusqlite::{params, OptionalExtension};
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -57,8 +57,123 @@ pub fn detect_lang(path: &Path) -> Option<Language> {
     }
 }
 
+/// Build-manifest filenames that mark a project root in a polyglot monorepo.
+const UNIT_MANIFESTS: &[&str] = &[
+    "Cargo.toml",
+    "package.json",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "composer.json",
+    "Package.swift",
+];
+
+/// A short label for the manifest a build root was detected from, or None if `name` isn't one.
+fn manifest_kind(name: &str) -> Option<&'static str> {
+    match name {
+        "Cargo.toml" => Some("cargo"),
+        "package.json" => Some("npm"),
+        "go.mod" => Some("go"),
+        "pom.xml" | "build.gradle" | "build.gradle.kts" => Some("jvm"),
+        "composer.json" => Some("php"),
+        "Package.swift" => Some("swift"),
+        _ if name.ends_with(".csproj") || name.ends_with(".sln") => Some("dotnet"),
+        _ => None,
+    }
+}
+
+/// True if `dir` holds a build manifest (so it starts an index unit).
+fn is_unit_root(dir: &Path) -> bool {
+    if UNIT_MANIFESTS.iter().any(|m| dir.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(dir).is_ok_and(|rd| {
+        rd.flatten().any(|e| {
+            e.file_name()
+                .to_str()
+                .map(|n| n.ends_with(".csproj") || n.ends_with(".sln"))
+                .unwrap_or(false)
+        })
+    })
+}
+
+/// `dir` as a "/"-normalized path relative to `root`; "." when they are the same directory.
+fn rel_to_root(root: &Path, dir: &Path) -> String {
+    match dir.strip_prefix(root) {
+        Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().replace('\\', "/"),
+        _ => ".".to_string(),
+    }
+}
+
+/// Resolves and memoizes the index unit (nearest ancestor build root) a file belongs to.
+/// Files under no sub-manifest map to the repo root ("."), so a single-project repo has one unit.
+struct UnitResolver<'a> {
+    root: &'a Path,
+    cache: HashMap<PathBuf, String>,
+}
+
+impl<'a> UnitResolver<'a> {
+    fn new(root: &'a Path) -> Self {
+        Self {
+            root,
+            cache: HashMap::new(),
+        }
+    }
+
+    fn unit_for(&mut self, rel: &str) -> String {
+        let abs = self.root.join(rel);
+        let dir = abs.parent().unwrap_or(self.root).to_path_buf();
+        self.resolve_dir(&dir)
+    }
+
+    fn resolve_dir(&mut self, dir: &Path) -> String {
+        if let Some(u) = self.cache.get(dir) {
+            return u.clone();
+        }
+        let unit = if is_unit_root(dir) {
+            rel_to_root(self.root, dir)
+        } else if dir == self.root {
+            ".".to_string()
+        } else {
+            match dir.parent() {
+                Some(p) => self.resolve_dir(p),
+                None => ".".to_string(),
+            }
+        };
+        self.cache.insert(dir.to_path_buf(), unit.clone());
+        unit
+    }
+}
+
+/// Detected build roots under `root` as (unit path, manifest label), sorted by path.
+pub fn detect_index_units(root: &Path) -> Vec<(String, String)> {
+    let mut units: BTreeMap<String, String> = BTreeMap::new();
+    for entry in WalkBuilder::new(root)
+        .add_custom_ignore_filename(".codemapignore")
+        .build()
+        .flatten()
+    {
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if let Some(kind) = manifest_kind(name) {
+            let dir = path.parent().unwrap_or(root);
+            units
+                .entry(rel_to_root(root, dir))
+                .or_insert_with(|| kind.to_string());
+        }
+    }
+    units.into_iter().collect()
+}
+
 pub fn index_full(db: &mut Db, root: &Path) -> Result<IndexStats> {
     let mut stats = IndexStats::default();
+    let mut units = UnitResolver::new(root);
     for entry in WalkBuilder::new(root)
         .add_custom_ignore_filename(".codemapignore")
         .build()
@@ -93,7 +208,8 @@ pub fn index_full(db: &mut Db, root: &Path) -> Result<IndexStats> {
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        index_one(db, &rel, lang, &bytes, mtime_ns, &mut stats)
+        let unit = units.unit_for(&rel);
+        index_one(db, &rel, lang, &bytes, mtime_ns, &unit, &mut stats)
             .with_context(|| format!("index {rel}"))?;
     }
     db.set_meta("scanner_mode", "fs")?;
@@ -129,7 +245,8 @@ pub fn reindex_file(db: &mut Db, root: &Path, rel: &str) -> Result<()> {
         .map(|d| d.as_nanos() as i64)
         .unwrap_or(0);
     let mut stats = IndexStats::default();
-    index_one(db, rel, lang, &bytes, mtime_ns, &mut stats)
+    let unit = UnitResolver::new(root).unit_for(rel);
+    index_one(db, rel, lang, &bytes, mtime_ns, &unit, &mut stats)
 }
 
 fn index_one(
@@ -138,6 +255,7 @@ fn index_one(
     lang: Language,
     bytes: &[u8],
     mtime_ns: i64,
+    unit: &str,
     stats: &mut IndexStats,
 ) -> Result<()> {
     let source = String::from_utf8_lossy(bytes);
@@ -152,6 +270,7 @@ fn index_one(
 
     let tx = db.conn.transaction()?;
     let path_sid = writer::intern(&tx, rel)?;
+    let unit_sid = writer::intern(&tx, unit)?;
 
     // Upsert the file row, keeping its id stable.
     let file_id: Option<i64> = tx
@@ -162,17 +281,17 @@ fn index_one(
     let file_id = match file_id {
         Some(fid) => {
             tx.execute(
-                "UPDATE file SET lang=?2,size=?3,mtime_ns=?4,content_hash=?5,line_count=?6,indexed_at=?7
+                "UPDATE file SET lang=?2,size=?3,mtime_ns=?4,content_hash=?5,line_count=?6,indexed_at=?7,index_unit_sid=?8
                  WHERE id=?1",
-                params![fid, lang.as_i64(), bytes.len() as i64, mtime_ns, hash.as_bytes().to_vec(), line_count, now],
+                params![fid, lang.as_i64(), bytes.len() as i64, mtime_ns, hash.as_bytes().to_vec(), line_count, now, unit_sid],
             )?;
             fid
         }
         None => {
             tx.execute(
-                "INSERT INTO file(path_sid,lang,size,mtime_ns,content_hash,line_count,indexed_at,tier)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,0)",
-                params![path_sid, lang.as_i64(), bytes.len() as i64, mtime_ns, hash.as_bytes().to_vec(), line_count, now],
+                "INSERT INTO file(path_sid,lang,size,mtime_ns,content_hash,line_count,indexed_at,tier,index_unit_sid)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,0,?8)",
+                params![path_sid, lang.as_i64(), bytes.len() as i64, mtime_ns, hash.as_bytes().to_vec(), line_count, now, unit_sid],
             )?;
             tx.last_insert_rowid()
         }

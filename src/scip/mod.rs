@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use protobuf::Message;
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const ROLE_DEFINITION: i32 = 1; // SymbolRole::Definition bit
 
@@ -33,29 +33,68 @@ impl ScipStats {
     }
 }
 
-pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
-    let bytes =
-        std::fs::read(scip_path).with_context(|| format!("read {}", scip_path.display()))?;
-    let index = ::scip::types::Index::parse_from_bytes(&bytes).context("parse SCIP index")?;
-
+/// Ingest one or more `.scip` files. In a monorepo each indexer emits its own index relative to
+/// its project root; that root (relative to the repo) prefixes the per-document paths so they
+/// match how codemap stored them. Re-runnable: previously derived SCIP edges are dropped first.
+pub fn ingest(db: &mut Db, root: &Path, scip_paths: &[PathBuf]) -> Result<ScipStats> {
     let mut stats = ScipStats::default();
     let tx = db.conn.transaction()?;
-    // Idempotency: drop previously-derived SCIP edges.
+    // Idempotency: drop previously-derived SCIP edges before re-ingesting.
     tx.execute(
         "DELETE FROM edge WHERE provenance=?1",
         [Provenance::Scip.as_i64()],
     )?;
 
+    let mut covered: HashSet<i64> = HashSet::new();
+    for scip_path in scip_paths {
+        ingest_one(&tx, root, scip_path, &mut stats, &mut covered)?;
+    }
+
+    stats.covered_files = covered.len();
+    stats.total_files =
+        tx.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))? as usize;
+    tx.commit()?;
+    let at = scip_paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(", ");
+    db.set_meta("scip_at", &at)?;
+    db.set_meta(
+        "scip_coverage",
+        &format!(
+            "{}/{} ({}%)",
+            stats.covered_files,
+            stats.total_files,
+            stats.coverage_pct()
+        ),
+    )?;
+    Ok(stats)
+}
+
+fn ingest_one(
+    tx: &rusqlite::Transaction,
+    root: &Path,
+    scip_path: &Path,
+    stats: &mut ScipStats,
+    covered: &mut HashSet<i64>,
+) -> Result<()> {
+    let bytes =
+        std::fs::read(scip_path).with_context(|| format!("read {}", scip_path.display()))?;
+    let index = ::scip::types::Index::parse_from_bytes(&bytes).context("parse SCIP index")?;
+    let prefix = unit_prefix(&index.metadata.project_root, root);
+
     // Pass A: map each SCIP symbol string to our symbol id via (file, definition line).
     let mut sym_map: HashMap<String, (i64, i64)> = HashMap::new(); // scip_symbol -> (id, kind)
-    let mut covered: HashSet<i64> = HashSet::new();
+    let mut covered_here: Vec<i64> = Vec::new();
     for doc in &index.documents {
         stats.documents += 1;
-        let Some(file_id) = file_id_by_path(&tx, &doc.relative_path)? else {
+        let Some(file_id) = file_id_by_path(tx, &full_path(&prefix, &doc.relative_path))? else {
             continue;
         };
         covered.insert(file_id);
-        let by_sel = symbols_by_sel_line(&tx, file_id)?;
+        covered_here.push(file_id);
+        let by_sel = symbols_by_sel_line(tx, file_id)?;
         for occ in &doc.occurrences {
             if occ.symbol_roles & ROLE_DEFINITION == 0 {
                 continue;
@@ -64,7 +103,7 @@ pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
                 continue;
             };
             if let Some(&(sid, kind)) = by_sel.get(&((line0 as u32) + 1)) {
-                let sym_sid = writer::intern(&tx, &occ.symbol)?;
+                let sym_sid = writer::intern(tx, &occ.symbol)?;
                 tx.execute(
                     "UPDATE symbol SET scip_sym_sid=?2 WHERE id=?1",
                     params![sid, sym_sid],
@@ -75,7 +114,7 @@ pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
     }
 
     // For covered files, SCIP is authoritative: drop the syntactic tree-sitter call edges.
-    for &fid in &covered {
+    for &fid in &covered_here {
         tx.execute(
             "DELETE FROM edge WHERE kind=?1 AND provenance!=?2
              AND source_symbol_id IN (SELECT id FROM symbol WHERE file_id=?3)",
@@ -85,10 +124,10 @@ pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
 
     // Pass B: reference occurrences to a function/method become resolved call edges.
     for doc in &index.documents {
-        let Some(file_id) = file_id_by_path(&tx, &doc.relative_path)? else {
+        let Some(file_id) = file_id_by_path(tx, &full_path(&prefix, &doc.relative_path))? else {
             continue;
         };
-        let callables = callables_in_file(&tx, file_id)?;
+        let callables = callables_in_file(tx, file_id)?;
         for occ in &doc.occurrences {
             if occ.symbol_roles & ROLE_DEFINITION != 0 {
                 continue;
@@ -112,22 +151,36 @@ pub fn ingest(db: &mut Db, scip_path: &Path) -> Result<ScipStats> {
             )? as u64;
         }
     }
+    Ok(())
+}
 
-    stats.covered_files = covered.len();
-    stats.total_files =
-        tx.query_row("SELECT count(*) FROM file", [], |r| r.get::<_, i64>(0))? as usize;
-    tx.commit()?;
-    db.set_meta("scip_at", &scip_path.to_string_lossy())?;
-    db.set_meta(
-        "scip_coverage",
-        &format!(
-            "{}/{} ({}%)",
-            stats.covered_files,
-            stats.total_files,
-            stats.coverage_pct()
-        ),
-    )?;
-    Ok(stats)
+/// A SCIP document path made relative to the repo root by prepending its project-root prefix.
+fn full_path(prefix: &str, rel: &str) -> String {
+    if prefix.is_empty() {
+        rel.to_string()
+    } else {
+        format!("{prefix}/{rel}")
+    }
+}
+
+/// The SCIP `project_root` (a `file://` URI) expressed relative to the repo root, so per-document
+/// paths can be matched. Empty when it is the repo root itself or can't be made relative.
+fn unit_prefix(project_root_uri: &str, repo_root: &Path) -> String {
+    if project_root_uri.is_empty() {
+        return String::new();
+    }
+    let pr = project_root_uri
+        .strip_prefix("file://")
+        .unwrap_or(project_root_uri);
+    match (repo_root.canonicalize(), Path::new(pr).canonicalize()) {
+        (Ok(r), Ok(p)) => p
+            .strip_prefix(&r)
+            .ok()
+            .filter(|rel| !rel.as_os_str().is_empty())
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 fn file_id_by_path(conn: &rusqlite::Connection, path: &str) -> Result<Option<i64>> {
@@ -250,7 +303,7 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(&idx.write_to_bytes().unwrap()).unwrap();
 
-        let stats = ingest(&mut db, f.path()).unwrap();
+        let stats = ingest(&mut db, Path::new("."), &[f.path().to_path_buf()]).unwrap();
         assert_eq!(stats.covered_files, 1);
         assert!(stats.edges >= 1);
 

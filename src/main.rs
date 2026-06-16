@@ -62,9 +62,9 @@ enum Command {
         /// Also ingest a SCIP index for precise edges (defaults to <PATH>/index.scip).
         #[arg(long)]
         with_scip: bool,
-        /// Path to the .scip file (implies --with-scip).
+        /// Path to a .scip file (repeatable for monorepos; implies --with-scip).
         #[arg(long)]
-        scip: Option<PathBuf>,
+        scip: Vec<PathBuf>,
     },
     /// Resolve a name/name_path to symbol ids (no code).
     Resolve {
@@ -331,7 +331,7 @@ fn cmd_setup(path: &Path, do_index: bool, hooks: bool) -> Result<()> {
     // 3) Optionally build the index now.
     if do_index {
         println!("\nindexing:");
-        cmd_index(path, false, false, None)?;
+        cmd_index(path, false, false, Vec::new())?;
     }
 
     println!("\nsetup complete — start the agent server with `codemap mcp`.");
@@ -425,7 +425,51 @@ fn cmd_status(root: &Path) -> Result<()> {
     println!("  occurrences:   {}", db.count("occurrence")?);
     println!("  call edges:    {}", db.count("edge")?);
     println!("  index size:    {} KB", size / 1024);
+
+    let units = index_units(&db)?;
+    if units.len() > 1 {
+        println!("  index units:");
+        for u in &units {
+            let pct = if u.files > 0 {
+                u.covered * 100 / u.files
+            } else {
+                0
+            };
+            println!("    {:<24} {} files, scip {}%", u.unit, u.files, pct);
+        }
+    }
     Ok(())
+}
+
+struct UnitCoverage {
+    unit: String,
+    files: i64,
+    covered: i64,
+}
+
+/// Per-index-unit file count and SCIP coverage (a file is covered once any of its symbols maps
+/// to a SCIP symbol). Files map to "." when no build root was detected above them.
+fn index_units(db: &Db) -> Result<Vec<UnitCoverage>> {
+    let mut stmt = db.conn.prepare(
+        "SELECT COALESCE(u.text,'.') AS unit, count(*) AS files,
+                SUM(CASE WHEN EXISTS(
+                    SELECT 1 FROM symbol s WHERE s.file_id=f.id AND s.scip_sym_sid IS NOT NULL
+                ) THEN 1 ELSE 0 END) AS covered
+         FROM file f LEFT JOIN string_pool u ON u.id=f.index_unit_sid
+         GROUP BY unit ORDER BY files DESC, unit",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(UnitCoverage {
+            unit: r.get(0)?,
+            files: r.get(1)?,
+            covered: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+        })
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row?);
+    }
+    Ok(out)
 }
 
 fn cmd_prune(root: &Path, gc: bool) -> Result<()> {
@@ -485,7 +529,7 @@ fn cmd_scip_cmd(lang: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_index(path: &Path, incremental: bool, with_scip: bool, scip: Option<PathBuf>) -> Result<()> {
+fn cmd_index(path: &Path, incremental: bool, with_scip: bool, scip: Vec<PathBuf>) -> Result<()> {
     std::fs::create_dir_all(path.join(".codemap"))?;
     let mut db = Db::open(&db_path(path))?;
     if incremental {
@@ -503,19 +547,25 @@ fn cmd_index(path: &Path, incremental: bool, with_scip: bool, scip: Option<PathB
         );
     }
 
-    if with_scip || scip.is_some() {
-        let scip_path = scip.unwrap_or_else(|| path.join("index.scip"));
-        if !scip_path.exists() {
-            bail!(
-                "no SCIP index at {} — generate it yourself, then re-run with --scip <path>.\n\
-                 codemap never runs the indexer. See `codemap scip-cmd <lang>` for the command.",
-                scip_path.display()
-            );
+    if with_scip || !scip.is_empty() {
+        let scip_paths: Vec<PathBuf> = if scip.is_empty() {
+            vec![path.join("index.scip")]
+        } else {
+            scip
+        };
+        for p in &scip_paths {
+            if !p.exists() {
+                bail!(
+                    "no SCIP index at {} — generate it yourself, then re-run with --scip <path>.\n\
+                     codemap never runs the indexer. See `codemap scip-cmd <lang>` for the command.",
+                    p.display()
+                );
+            }
         }
-        let s = codemap::scip::ingest(&mut db, &scip_path)?;
+        let s = codemap::scip::ingest(&mut db, path, &scip_paths)?;
         println!(
-            "codemap: SCIP ingested {} ({} docs, {}/{} files covered = {}%, {} precise edges)",
-            scip_path.display(),
+            "codemap: SCIP ingested {} file(s) ({} docs, {}/{} files covered = {}%, {} precise edges)",
+            scip_paths.len(),
             s.documents,
             s.covered_files,
             s.total_files,

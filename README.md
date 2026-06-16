@@ -23,6 +23,10 @@ Storage is a single on-disk SQLite file (`./.codemap/index.db`, WAL + FTS5). Nav
 never include source code; only `read-symbol` returns code — just the symbol's range, re-checked
 against the file on disk first. Built as a single Rust crate (lib + bin).
 
+In a polyglot monorepo, each build root (`Cargo.toml`, `package.json`, `go.mod`, `pom.xml`,
+`*.csproj`, …) becomes an **index unit**. Generate one `.scip` per unit and ingest them together
+by repeating `--scip`; `codemap status` then reports SCIP coverage per unit.
+
 ## Languages
 
 Rust, TypeScript, Python, Go, Java, C#, PHP, C, C++, Swift — each with its own extraction test.
@@ -33,7 +37,7 @@ Rust, TypeScript, Python, Go, Java, C#, PHP, C, C++, Swift — each with its own
 ```
 codemap index                          # build the index (tree-sitter)
 codemap index --incremental            # only reindex what changed (git or mtime/size)
-codemap index --with-scip --scip <f>   # also ingest a SCIP index for precise edges
+codemap index --scip a.scip --scip b.scip   # ingest one SCIP index per build root (monorepo)
 codemap resolve <name>     # name -> symbol ids
 codemap outline <file>     # symbols in a file
 codemap read-symbol <id>   # one symbol's code (its range only)
