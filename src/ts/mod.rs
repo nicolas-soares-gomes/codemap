@@ -22,6 +22,7 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
         Language::Go => Some(tree_sitter_go::LANGUAGE.into()),
         Language::Java => Some(tree_sitter_java::LANGUAGE.into()),
         Language::CSharp => Some(tree_sitter_c_sharp::LANGUAGE.into()),
+        Language::Php => Some(tree_sitter_php::LANGUAGE_PHP.into()),
         _ => None,
     }
 }
@@ -47,6 +48,7 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
         Language::Go => walk_go(tree.root_node(), src, &mut scope, &mut out),
         Language::Java => walk_java(tree.root_node(), src, &mut scope, &mut out),
         Language::CSharp => walk_csharp(tree.root_node(), src, &mut scope, &mut out),
+        Language::Php => walk_php(tree.root_node(), src, &mut scope, &mut out),
         _ => {}
     }
     out
@@ -158,6 +160,7 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
         Language::Go => collect_calls_go(tree.root_node(), src, &mut out),
         Language::Java => collect_calls_java(tree.root_node(), src, &mut out),
         Language::CSharp => collect_calls_csharp(tree.root_node(), src, &mut out),
+        Language::Php => collect_calls_php(tree.root_node(), src, &mut out),
         _ => {}
     }
     out
@@ -523,6 +526,116 @@ fn push_named_java(node: Node, src: &[u8], scope: &mut Vec<String>, kind: Symbol
         scope.pop();
     } else {
         walk_java(node, src, scope, out);
+    }
+}
+
+// ---- PHP -------------------------------------------------------------------
+
+fn walk_php(node: Node, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<Extracted>) {
+    let mut cursor = node.walk();
+    let mut ns_pushes = 0usize;
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "namespace_definition" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    let name = node_text(nn, src).to_string();
+                    emit(out, &name, scope, SymbolKind::Module, child, Some(nn));
+                    if child.child_by_field_name("body").is_some() {
+                        // braced `namespace Foo { ... }`
+                        scope.push(name);
+                        walk_php(child, src, scope, out);
+                        scope.pop();
+                    } else {
+                        // bodyless `namespace Foo;` applies to the following siblings
+                        scope.push(name);
+                        ns_pushes += 1;
+                    }
+                }
+            }
+            "class_declaration" => push_named_php(child, src, scope, SymbolKind::Class, out),
+            "interface_declaration" => push_named_php(child, src, scope, SymbolKind::Interface, out),
+            "trait_declaration" => push_named_php(child, src, scope, SymbolKind::Trait, out),
+            "enum_declaration" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    let name = node_text(nn, src).to_string();
+                    emit(out, &name, scope, SymbolKind::Enum, child, Some(nn));
+                    scope.push(name);
+                    walk_php(child, src, scope, out);
+                    scope.pop();
+                }
+            }
+            "enum_case" => emit_named(child, src, scope, SymbolKind::Variant, out),
+            "function_definition" => emit_named(child, src, scope, SymbolKind::Function, out),
+            "method_declaration" => emit_named(child, src, scope, SymbolKind::Method, out),
+            "property_declaration" => {
+                let mut pc = child.walk();
+                for el in child.named_children(&mut pc) {
+                    if el.kind() == "property_element" {
+                        if let Some(vn) = el.named_child(0) {
+                            let name = node_text(vn, src).trim_start_matches('$');
+                            emit(out, name, scope, SymbolKind::Field, el, Some(vn));
+                        }
+                    }
+                }
+            }
+            "const_declaration" => {
+                let mut cc = child.walk();
+                for el in child.named_children(&mut cc) {
+                    if el.kind() == "const_element" {
+                        if let Some(nn) = el.named_child(0) {
+                            emit(out, node_text(nn, src), scope, SymbolKind::Const, el, Some(nn));
+                        }
+                    }
+                }
+            }
+            _ => walk_php(child, src, scope, out),
+        }
+    }
+    for _ in 0..ns_pushes {
+        scope.pop();
+    }
+}
+
+fn push_named_php(node: Node, src: &[u8], scope: &mut Vec<String>, kind: SymbolKind, out: &mut Vec<Extracted>) {
+    if let Some(nn) = node.child_by_field_name("name") {
+        let name = node_text(nn, src).to_string();
+        emit(out, &name, scope, kind, node, Some(nn));
+        scope.push(name);
+        walk_php(node, src, scope, out);
+        scope.pop();
+    } else {
+        walk_php(node, src, scope, out);
+    }
+}
+
+fn collect_calls_php(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        let name = match child.kind() {
+            "function_call_expression" => child.child_by_field_name("function").map(|n| {
+                node_text(n, src).rsplit(['\\', ':']).next().unwrap_or("").to_string()
+            }),
+            "member_call_expression" | "nullsafe_member_call_expression" | "scoped_call_expression" => {
+                child.child_by_field_name("name").map(|n| node_text(n, src).to_string())
+            }
+            _ => None,
+        };
+        if let Some(name) = name {
+            if !name.is_empty() {
+                let sp = child.start_position();
+                let ep = child.end_position();
+                out.push(CallSite {
+                    name,
+                    range: Range {
+                        start_line: sp.row as u32 + 1,
+                        start_col: sp.column as u32,
+                        end_line: ep.row as u32 + 1,
+                        end_col: ep.column as u32,
+                    },
+                });
+            }
+        }
+        collect_calls_php(child, src, out);
     }
 }
 
