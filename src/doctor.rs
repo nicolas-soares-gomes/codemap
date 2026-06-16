@@ -60,6 +60,31 @@ pub fn scip_cmd(lang: &str) -> Option<String> {
     })
 }
 
+/// The argv to launch a language server for `lang` over stdio, if codemap knows a common one.
+/// codemap never installs it — this is only used when the binary is already on PATH.
+pub fn lsp_invocation(lang: Language) -> Vec<String> {
+    use Language::*;
+    let argv: &[&str] = match lang {
+        Rust => &["rust-analyzer"],
+        Go => &["gopls"],
+        C | Cpp => &["clangd"],
+        TypeScript | JavaScript => &["typescript-language-server", "--stdio"],
+        Python => &["pyright-langserver", "--stdio"],
+        Java => &["jdtls"],
+        CSharp => &["csharp-ls"],
+        Php => &["intelephense", "--stdio"],
+        Swift => &["sourcekit-lsp"],
+        Kotlin => &["kotlin-lsp", "--stdio"],
+        Clojure => &["clojure-lsp"],
+    };
+    argv.iter().map(|s| s.to_string()).collect()
+}
+
+/// True if `bin` is on PATH (probes `bin --version`).
+pub fn binary_present(bin: &str) -> bool {
+    present(bin)
+}
+
 /// Map a detected language to its row key in CAPS.
 fn caps_key(lang: Language) -> &'static str {
     use Language::*;

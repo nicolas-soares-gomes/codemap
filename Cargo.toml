@@ -13,7 +13,7 @@ default = []
 # Serve the MCP tools over HTTP (streamable) in addition to stdio.
 mcp-http = ["dep:axum", "rmcp/transport-streamable-http-server"]
 # On-demand precise edges from a user-installed language server (never installed by codemap).
-tier2-lsp = ["dep:lsp-types"]
+tier2-lsp = []
 
 [lib]
 name = "codemap"
@@ -47,7 +47,6 @@ scip = "0.5"
 protobuf = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "net"] }
 axum = { version = "0.8", optional = true }
-lsp-types = { version = "0.97", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

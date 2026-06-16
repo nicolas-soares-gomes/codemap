@@ -56,6 +56,13 @@ codemap install [--hooks]  # teach your AI agent (Claude, Cursor, …) to use co
 codemap status | prune | reset | doctor
 ```
 
+### Optional features
+
+- `--features mcp-http` adds `codemap mcp --http --addr <ip:port>` (streamable HTTP transport).
+- `--features tier2-lsp` adds `codemap lsp-enrich <symbol>`: a user-installed language server
+  confirms a symbol's call edges, upgrading them to `lsp`/`resolved`. codemap never installs the
+  server — run `codemap doctor` to see which one to install.
+
 ## Agent tools (MCP)
 
 `resolve_symbol`, `read_symbol`, `get_callers`, `get_callees`, `get_references`, `get_variables`,

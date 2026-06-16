@@ -204,6 +204,14 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Confirm a symbol's call edges via its language server (requires --features tier2-lsp).
+    /// Upgrades the syntactic edges to lsp/resolved. codemap never installs the server.
+    #[cfg(feature = "tier2-lsp")]
+    LspEnrich {
+        symbol: String,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Guided onboarding: check the repo, install the agent skill, optionally index.
     Setup {
         /// Also build the index now.
@@ -299,7 +307,18 @@ fn main() -> Result<()> {
             root,
         } => cmd_uninstall(&root, &targets, hooks),
         Command::Setup { index, hooks, path } => cmd_setup(&path, index, hooks),
+        #[cfg(feature = "tier2-lsp")]
+        Command::LspEnrich { symbol, root } => cmd_lsp_enrich(&root, &symbol),
     }
+}
+
+#[cfg(feature = "tier2-lsp")]
+fn cmd_lsp_enrich(root: &Path, symbol: &str) -> Result<()> {
+    let mut db = open_existing(root)?;
+    let id = query::resolve_arg(&db, symbol)?;
+    let n = codemap::lsp::enrich(&mut db, root, id)?;
+    println!("codemap: confirmed {n} call edge(s) via language server (provenance=lsp)");
+    Ok(())
 }
 
 fn parse_targets(ids: &[String]) -> Result<Vec<codemap::skills::Target>> {
