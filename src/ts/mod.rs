@@ -20,6 +20,7 @@ pub fn ts_language(lang: Language) -> Option<tree_sitter::Language> {
         Language::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
         Language::Python => Some(tree_sitter_python::LANGUAGE.into()),
         Language::Go => Some(tree_sitter_go::LANGUAGE.into()),
+        Language::Java => Some(tree_sitter_java::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -43,6 +44,7 @@ pub fn extract(lang: Language, source: &str) -> Vec<Extracted> {
         Language::TypeScript => walk_ts(tree.root_node(), src, &mut scope, &mut out),
         Language::Python => walk_py(tree.root_node(), src, &mut scope, false, &mut out),
         Language::Go => walk_go(tree.root_node(), src, &mut scope, &mut out),
+        Language::Java => walk_java(tree.root_node(), src, &mut scope, &mut out),
         _ => {}
     }
     out
@@ -152,6 +154,7 @@ pub fn extract_calls(lang: Language, source: &str) -> Vec<CallSite> {
         Language::TypeScript => collect_calls_ts(tree.root_node(), src, &mut out),
         Language::Python => collect_calls_py(tree.root_node(), src, &mut out),
         Language::Go => collect_calls_go(tree.root_node(), src, &mut out),
+        Language::Java => collect_calls_java(tree.root_node(), src, &mut out),
         _ => {}
     }
     out
@@ -455,5 +458,89 @@ fn callee_name_go(func: Node, src: &[u8]) -> Option<String> {
         "identifier" => Some(node_text(func, src).to_string()),
         "selector_expression" => func.child_by_field_name("field").map(|n| node_text(n, src).to_string()),
         _ => None,
+    }
+}
+
+// ---- Java ------------------------------------------------------------------
+
+fn walk_java(node: Node, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<Extracted>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            "class_declaration" | "record_declaration" => push_named_java(child, src, scope, SymbolKind::Class, out),
+            "interface_declaration" | "annotation_type_declaration" => push_named_java(child, src, scope, SymbolKind::Interface, out),
+            "enum_declaration" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    let name = node_text(nn, src).to_string();
+                    emit(out, &name, scope, SymbolKind::Enum, child, Some(nn));
+                    scope.push(name);
+                    let mut bc = child.walk();
+                    for d in child.named_children(&mut bc) {
+                        if d.kind() == "enum_body" {
+                            let mut ec = d.walk();
+                            for c in d.named_children(&mut ec) {
+                                if c.kind() == "enum_constant" {
+                                    if let Some(en) = c.child_by_field_name("name") {
+                                        emit(out, node_text(en, src), scope, SymbolKind::Variant, c, Some(en));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    walk_java(child, src, scope, out);
+                    scope.pop();
+                }
+            }
+            "method_declaration" | "constructor_declaration" => {
+                if let Some(nn) = child.child_by_field_name("name") {
+                    emit(out, node_text(nn, src), scope, SymbolKind::Method, child, Some(nn));
+                }
+            }
+            "field_declaration" => {
+                let mut fc = child.walk();
+                for d in child.named_children(&mut fc) {
+                    if d.kind() == "variable_declarator" {
+                        if let Some(nn) = d.child_by_field_name("name") {
+                            emit(out, node_text(nn, src), scope, SymbolKind::Field, d, Some(nn));
+                        }
+                    }
+                }
+            }
+            _ => walk_java(child, src, scope, out),
+        }
+    }
+}
+
+fn push_named_java(node: Node, src: &[u8], scope: &mut Vec<String>, kind: SymbolKind, out: &mut Vec<Extracted>) {
+    if let Some(nn) = node.child_by_field_name("name") {
+        let name = node_text(nn, src).to_string();
+        emit(out, &name, scope, kind, node, Some(nn));
+        scope.push(name);
+        walk_java(node, src, scope, out);
+        scope.pop();
+    } else {
+        walk_java(node, src, scope, out);
+    }
+}
+
+fn collect_calls_java(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "method_invocation" {
+            if let Some(nn) = child.child_by_field_name("name") {
+                let sp = child.start_position();
+                let ep = child.end_position();
+                out.push(CallSite {
+                    name: node_text(nn, src).to_string(),
+                    range: Range {
+                        start_line: sp.row as u32 + 1,
+                        start_col: sp.column as u32,
+                        end_line: ep.row as u32 + 1,
+                        end_col: ep.column as u32,
+                    },
+                });
+            }
+        }
+        collect_calls_java(child, src, out);
     }
 }
