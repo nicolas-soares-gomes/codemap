@@ -4,6 +4,7 @@
 
 pub mod db;
 pub mod doctor;
+pub mod export;
 pub mod index;
 pub mod mcp;
 pub mod query;

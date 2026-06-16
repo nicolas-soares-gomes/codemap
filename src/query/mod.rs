@@ -213,6 +213,52 @@ fn walk(db: &Db, root_id: i64, depth: i64, limit: i64, forward: bool) -> Result<
     Ok(rows)
 }
 
+/// A bounded subgraph around a root symbol, for export.
+#[derive(Debug, Default)]
+pub struct Subgraph {
+    pub root: i64,
+    pub nodes: Vec<(i64, String)>, // (id, name_path)
+    pub edges: Vec<(i64, i64, Option<Provenance>, Option<Resolution>)>,
+}
+
+pub fn subgraph(db: &Db, root_id: i64, depth: i64, forward: bool) -> Result<Subgraph> {
+    let walked = if forward {
+        callees(db, root_id, depth, 1000)?
+    } else {
+        callers(db, root_id, depth, 1000)?
+    };
+    let mut ids: std::collections::HashSet<i64> = walked.iter().map(|h| h.id).collect();
+    ids.insert(root_id);
+
+    let mut nodes = Vec::new();
+    let mut label = db.conn.prepare(
+        "SELECT np.text FROM symbol s JOIN string_pool np ON np.id=s.name_path_sid WHERE s.id=?1",
+    )?;
+    for &id in &ids {
+        if let Some(name) = label.query_row([id], |r| r.get::<_, String>(0)).optional()? {
+            nodes.push((id, name));
+        }
+    }
+    nodes.sort();
+
+    let mut edges = Vec::new();
+    let mut estmt = db
+        .conn
+        .prepare("SELECT target_symbol_id, provenance, resolution FROM edge WHERE source_symbol_id=?1 AND kind=1")?;
+    for &src in &ids {
+        let rows = estmt
+            .query_map([src], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (tgt, prov, res) in rows {
+            if ids.contains(&tgt) {
+                edges.push((src, tgt, Provenance::from_i64(prov), Resolution::from_i64(res)));
+            }
+        }
+    }
+    edges.sort_by_key(|e| (e.0, e.1));
+    Ok(Subgraph { root: root_id, nodes, edges })
+}
+
 fn row_to_hit(r: &rusqlite::Row) -> rusqlite::Result<Hit> {
     Ok(Hit {
         id: r.get(0)?,

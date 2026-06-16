@@ -75,6 +75,19 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Export a call subgraph around a symbol as DOT or Mermaid.
+    Export {
+        symbol: String,
+        #[arg(long, default_value = "dot")]
+        format: String,
+        #[arg(long, default_value_t = 2)]
+        depth: i64,
+        /// Traverse callers instead of callees.
+        #[arg(long)]
+        callers: bool,
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
     /// Run the MCP server over stdio (tools for AI agents).
     Mcp {
         #[arg(long, default_value = ".")]
@@ -114,6 +127,7 @@ fn main() -> Result<()> {
         Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
         Command::Callers { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, false),
         Command::Callees { symbol, depth, limit, root } => cmd_edges(&root, &symbol, depth, limit, true),
+        Command::Export { symbol, format, depth, callers, root } => cmd_export(&root, &symbol, &format, depth, callers),
         Command::Mcp { root } => cmd_mcp(&root),
         Command::Install { targets, list, root } => cmd_install(&root, &targets, list),
         Command::Uninstall { targets, root } => cmd_uninstall(&root, &targets),
@@ -144,6 +158,19 @@ fn cmd_uninstall(root: &Path, targets: &[String]) -> Result<()> {
     for r in &reports {
         println!("{:9} {:?}  {}", r.target, r.action, r.path);
     }
+    Ok(())
+}
+
+fn cmd_export(root: &Path, symbol: &str, format: &str, depth: i64, callers: bool) -> Result<()> {
+    let db = open_existing(root)?;
+    let id = query::resolve_arg(&db, symbol)?;
+    let g = query::subgraph(&db, id, depth, !callers)?;
+    let out = match format {
+        "dot" => codemap::export::to_dot(&g),
+        "mermaid" => codemap::export::to_mermaid(&g),
+        other => bail!("unknown format {other:?} (use dot|mermaid)"),
+    };
+    print!("{out}");
     Ok(())
 }
 
