@@ -262,6 +262,131 @@ pub fn resolve_calls(db: &mut Db, root: &Path) -> Result<u64> {
     Ok(edges)
 }
 
+/// Re-resolve the call edges originating in a single file (used by incremental reconcile).
+pub fn resolve_calls_file(db: &mut Db, root: &Path, rel: &str) -> Result<u64> {
+    let path = root.join(rel);
+    let Some(lang) = detect_lang(&path) else { return Ok(0) };
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => return Ok(0),
+    };
+    let file_id: Option<i64> = db
+        .conn
+        .query_row(
+            "SELECT f.id FROM file f JOIN string_pool s ON s.id=f.path_sid WHERE s.text=?1",
+            [rel],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(file_id) = file_id else { return Ok(0) };
+    let calls = ts::extract_calls(lang, &String::from_utf8_lossy(&bytes));
+    resolve_calls_for_file(db, file_id, &calls)
+}
+
+#[derive(Default, Debug)]
+pub struct ReconcileStats {
+    pub changed: u64,
+    pub added: u64,
+    pub deleted: u64,
+    pub unchanged: u64,
+}
+
+/// Incremental reconcile via mtime+size (hashing only suspects), then pruning deletions and
+/// re-resolving calls for changed/added files. Cross-file call edges to newly-added symbols
+/// may require a full `index` to appear (resolve_calls runs per changed file here).
+pub fn reconcile(db: &mut Db, root: &Path) -> Result<ReconcileStats> {
+    let snapshot = file_snapshot(db)?;
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut changed_files: Vec<String> = Vec::new();
+    let mut stats = ReconcileStats::default();
+
+    for entry in WalkBuilder::new(root)
+        .add_custom_ignore_filename(".codemapignore")
+        .build()
+    {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        if detect_lang(path).is_none() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        seen.insert(rel.clone());
+        let md = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let size = md.len() as i64;
+        let mtime = md
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        match snapshot.get(&rel) {
+            None => {
+                reindex_file(db, root, &rel)?;
+                changed_files.push(rel);
+                stats.added += 1;
+            }
+            Some((m, s, _)) if *m == mtime && *s == size => {
+                stats.unchanged += 1;
+            }
+            Some((_, _, h)) => {
+                // mtime/size differ: confirm by hashing before doing work.
+                let bytes = std::fs::read(path).unwrap_or_default();
+                if blake3::hash(&bytes).as_bytes()[..] != h[..] {
+                    reindex_file(db, root, &rel)?;
+                    changed_files.push(rel);
+                    stats.changed += 1;
+                } else {
+                    stats.unchanged += 1;
+                }
+            }
+        }
+    }
+
+    for rel in snapshot.keys() {
+        if !seen.contains(rel) {
+            let tx = db.conn.transaction()?;
+            writer::prune_file(&tx, rel)?;
+            tx.commit()?;
+            stats.deleted += 1;
+        }
+    }
+
+    for rel in &changed_files {
+        resolve_calls_file(db, root, rel)?;
+    }
+    db.set_meta("scanner_mode", "fs")?;
+    Ok(stats)
+}
+
+/// path -> (mtime_ns, size, content_hash)
+type FileSnapshot = HashMap<String, (i64, i64, Vec<u8>)>;
+
+fn file_snapshot(db: &Db) -> Result<FileSnapshot> {
+    let mut stmt = db.conn.prepare(
+        "SELECT s.text, f.mtime_ns, f.size, f.content_hash
+         FROM file f JOIN string_pool s ON s.id=f.path_sid",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, (r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, Vec<u8>>(3)?)))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().collect())
+}
+
 fn resolve_calls_for_file(db: &mut Db, file_id: i64, calls: &[ts::CallSite]) -> Result<u64> {
     // (id, start_line, end_line, kind) for enclosing-symbol lookup.
     let callables: Vec<(i64, u32, u32, i64)> = {

@@ -25,6 +25,9 @@ enum Command {
     Index {
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Only reindex files changed since the last index (mtime/size).
+        #[arg(long)]
+        incremental: bool,
         /// After Tier0, ingest a SCIP index for resolved edges (Tier1).
         #[arg(long)]
         tier1: bool,
@@ -105,7 +108,7 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Doctor => codemap::doctor::run(),
         Command::Init { path } => cmd_init(&path),
-        Command::Index { path, tier1, scip } => cmd_index(&path, tier1, scip),
+        Command::Index { path, incremental, tier1, scip } => cmd_index(&path, incremental, tier1, scip),
         Command::Resolve { query, limit, root } => cmd_resolve(&root, &query, limit),
         Command::Outline { file, root } => cmd_outline(&root, &file),
         Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
@@ -170,12 +173,20 @@ fn cmd_init(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_index(path: &Path, tier1: bool, scip: Option<PathBuf>) -> Result<()> {
+fn cmd_index(path: &Path, incremental: bool, tier1: bool, scip: Option<PathBuf>) -> Result<()> {
     std::fs::create_dir_all(path.join(".codemap"))?;
     let mut db = Db::open(&db_path(path))?;
-    let stats = codemap::index::index_full(&mut db, path)?;
-    let edges = codemap::index::resolve_calls(&mut db, path)?;
-    println!("codemap: indexed {} files, {} symbols, {} call edges (Tier0)", stats.files, stats.symbols, edges);
+    if incremental {
+        let r = codemap::index::reconcile(&mut db, path)?;
+        println!(
+            "codemap: incremental — {} changed, {} added, {} deleted, {} unchanged (Tier0)",
+            r.changed, r.added, r.deleted, r.unchanged
+        );
+    } else {
+        let stats = codemap::index::index_full(&mut db, path)?;
+        let edges = codemap::index::resolve_calls(&mut db, path)?;
+        println!("codemap: indexed {} files, {} symbols, {} call edges (Tier0)", stats.files, stats.symbols, edges);
+    }
 
     if tier1 || scip.is_some() {
         let scip_path = scip.unwrap_or_else(|| path.join("index.scip"));
