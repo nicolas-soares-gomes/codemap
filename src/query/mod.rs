@@ -9,6 +9,9 @@ use std::path::Path;
 
 pub mod project;
 
+/// Hard cap on nodes a single traversal may materialize (RAM guard on dense graphs).
+const NODE_BUDGET: i64 = 20_000;
+
 /// Compact navigation row (no code).
 #[derive(Debug, Clone)]
 pub struct Hit {
@@ -178,6 +181,8 @@ fn walk(db: &Db, root_id: i64, depth: i64, limit: i64, forward: bool) -> Result<
     } else {
         ("target_symbol_id", "source_symbol_id")
     };
+    // `bounded` caps how many nodes the recursive CTE materializes (RAM guard on dense hubs):
+    // with no ORDER BY before it, SQLite stops the recursion once NODE_BUDGET rows are produced.
     let sql = format!(
         "WITH RECURSIVE walk(sym, depth, prov, res, path) AS (
              SELECT ?1, 0, -1, -1, ',' || ?1 || ','
@@ -186,9 +191,10 @@ fn walk(db: &Db, root_id: i64, depth: i64, limit: i64, forward: bool) -> Result<
              FROM edge e JOIN walk w ON e.{from_col} = w.sym
              WHERE e.kind = 1 AND w.depth < ?2 AND instr(w.path, ',' || e.{to_col} || ',') = 0
          ),
+         bounded AS (SELECT sym, depth, prov, res FROM walk WHERE depth > 0 LIMIT ?4),
          best AS (
              SELECT sym, depth, prov, res, ROW_NUMBER() OVER (PARTITION BY sym ORDER BY depth) rn
-             FROM walk WHERE depth > 0
+             FROM bounded
          )
          SELECT b.sym, np.text, fp.text, s.start_line, s.kind, b.depth, b.prov, b.res
          FROM best b
@@ -202,7 +208,7 @@ fn walk(db: &Db, root_id: i64, depth: i64, limit: i64, forward: bool) -> Result<
     );
     let mut stmt = db.conn.prepare(&sql)?;
     let rows = stmt
-        .query_map(rusqlite::params![root_id, depth, limit], |r| {
+        .query_map(rusqlite::params![root_id, depth, limit, NODE_BUDGET], |r| {
             Ok(EdgeHit {
                 id: r.get(0)?,
                 name_path: r.get(1)?,
