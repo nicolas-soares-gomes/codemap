@@ -8,7 +8,6 @@ pub mod export;
 pub mod index;
 #[cfg(feature = "tier2-lsp")]
 pub mod lsp;
-pub mod mcp;
 pub mod query;
 pub mod scip;
 pub mod skills;

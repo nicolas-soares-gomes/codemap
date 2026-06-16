@@ -7,22 +7,12 @@ use std::path::{Path, PathBuf};
 
 const MARK_BEGIN: &str = "<!-- codemap:skill v1 -->";
 const MARK_END: &str = "<!-- /codemap:skill -->";
-const DESCRIPTION: &str = "Navigate code by symbol BEFORE Grep/Read: resolve_symbol -> outline/callers/callees (locations only) -> read_symbol (the only tool that returns code).";
+const DESCRIPTION: &str = "Use the codemap CLI to navigate by symbol instead of grepping: resolve/search -> callers/callees/refs/impact (locations only) -> read-symbol (the only code-returning command).";
 
-fn body() -> String {
-    "\
-Use codemap's MCP tools to navigate code by symbol BEFORE using Grep or Read.
-
-Cheap-to-expensive ladder:
-1. codemap_resolve_symbol(name) -> stable ids + name_paths (no code)
-2. codemap_get_file_outline / codemap_get_callers / codemap_get_callees -> locations only
-3. codemap_read_symbol(id) -> the ONLY tool that returns code (minimal range)
-
-Rules:
-- Do NOT Grep or Read to discover where something is defined or who calls it — use resolve/callers.
-- If you think \"one Read is faster than three calls\", that thought is the signal to use codemap tools.
-- Trust edges by their prov/res tag (scip/lsp resolved > tree_sitter ambiguous); prefer resolved edges over guesses."
-        .to_string()
+/// The canonical guidance, authored as a Markdown template and embedded at build time. Edit
+/// `skill.md` to change what every host's skill teaches; `rendered()` wraps it per host.
+fn body() -> &'static str {
+    include_str!("skill.md").trim_end()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -31,18 +21,26 @@ pub enum Target {
     Cursor,
     Copilot,
     Agents,
+    Gemini,
     Kilo,
 }
 
 impl Target {
-    pub fn all() -> [Target; 5] {
+    pub fn all() -> [Target; 6] {
         [
             Target::Claude,
             Target::Cursor,
             Target::Copilot,
             Target::Agents,
+            Target::Gemini,
             Target::Kilo,
         ]
+    }
+
+    /// Hosts written even when no project marker is present — the near-universal instruction
+    /// roots, so any agent picks up codemap in a repo that has no agent config yet.
+    fn always() -> [Target; 2] {
+        [Target::Agents, Target::Gemini]
     }
 
     pub fn id(self) -> &'static str {
@@ -51,6 +49,7 @@ impl Target {
             Target::Cursor => "cursor",
             Target::Copilot => "copilot",
             Target::Agents => "agents",
+            Target::Gemini => "gemini",
             Target::Kilo => "kilo",
         }
     }
@@ -66,6 +65,7 @@ impl Target {
             Target::Cursor => Some(root.join(".cursor/rules/codemap.mdc")),
             Target::Copilot => Some(root.join(".github/copilot-instructions.md")),
             Target::Agents => Some(root.join("AGENTS.md")),
+            Target::Gemini => Some(root.join("GEMINI.md")),
             Target::Kilo => home().map(|h| h.join(".config/kilo/skills/codemap/SKILL.md")),
         }
     }
@@ -77,13 +77,14 @@ impl Target {
             Target::Cursor => Some(root.join(".cursor")),
             Target::Copilot => Some(root.join(".github")),
             Target::Agents => Some(root.join("AGENTS.md")),
+            Target::Gemini => Some(root.join("GEMINI.md")),
             Target::Kilo => home().map(|h| h.join(".config/kilo")),
         }
     }
 
     /// Dedicated file (whole file is ours) vs a marked section inside a shared file.
     fn dedicated(self) -> bool {
-        !matches!(self, Target::Copilot | Target::Agents)
+        !matches!(self, Target::Copilot | Target::Agents | Target::Gemini)
     }
 
     fn rendered(self) -> String {
@@ -93,7 +94,7 @@ impl Target {
                 format!("---\nname: codemap\ndescription: {DESCRIPTION}\n---\n\n{block}")
             }
             Target::Cursor => format!("---\nalwaysApply: true\n---\n\n{block}"),
-            Target::Copilot | Target::Agents => {
+            Target::Copilot | Target::Agents | Target::Gemini => {
                 format!("{MARK_BEGIN}\n## codemap\n\n{}\n{MARK_END}", body())
             }
         }
@@ -123,10 +124,17 @@ pub fn detect(root: &Path) -> Vec<Target> {
         .collect()
 }
 
-/// Install to the given targets (empty = auto-detected). `dry` only reports.
+/// Install to the given targets. Empty = auto: every detected host plus the always-on instruction
+/// roots (AGENTS.md, GEMINI.md), so a repo with no agent config still gets taught. `dry` only reports.
 pub fn install(root: &Path, only: &[Target], dry: bool) -> Result<Vec<Report>> {
     let targets = if only.is_empty() {
-        detect(root)
+        let mut t = detect(root);
+        for a in Target::always() {
+            if !t.contains(&a) {
+                t.push(a);
+            }
+        }
+        t
     } else {
         only.to_vec()
     };

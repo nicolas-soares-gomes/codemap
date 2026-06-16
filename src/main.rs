@@ -170,20 +170,9 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// Run the MCP server (stdio by default; --http needs the `mcp-http` feature).
-    Mcp {
-        #[arg(long, default_value = ".")]
-        root: PathBuf,
-        /// Serve over HTTP instead of stdio (requires building with --features mcp-http).
-        #[arg(long)]
-        http: bool,
-        /// HTTP listen address when --http is set.
-        #[arg(long, default_value = "127.0.0.1:8765")]
-        addr: String,
-    },
     /// Install the codemap skill into detected agent hosts (writes text files only).
     Install {
-        /// Restrict to specific hosts (claude, cursor, copilot, agents, kilo). Repeatable.
+        /// Restrict to specific hosts (claude, cursor, copilot, agents, gemini, kilo). Repeatable.
         #[arg(long = "target")]
         targets: Vec<String>,
         /// Show what would be written without writing.
@@ -294,7 +283,6 @@ fn main() -> Result<()> {
             std::fs::create_dir_all(path.join(".codemap"))?;
             codemap::index::watch(&path)
         }
-        Command::Mcp { root, http, addr } => cmd_mcp(&root, http, &addr),
         Command::Install {
             targets,
             list,
@@ -335,8 +323,8 @@ fn cmd_setup(path: &Path, do_index: bool, hooks: bool) -> Result<()> {
     // 1) Check the repo's languages and suggest the tools that unlock precise results.
     codemap::doctor::run(path)?;
 
-    // 2) Install the skill that teaches the agent to use codemap, into every detected host.
-    //    AGENTS.md is read by Codex, Kimi, OpenCode and other agents.
+    // 2) Install the skill that teaches agents to drive the codemap CLI by symbol. Written into
+    //    every detected host plus the always-on roots (AGENTS.md is read by Codex/OpenCode/…).
     println!("\nteaching agents to use codemap:");
     let mut reports = codemap::skills::install(path, &[], false)?;
     if hooks {
@@ -359,7 +347,14 @@ fn cmd_setup(path: &Path, do_index: bool, hooks: bool) -> Result<()> {
         cmd_index(path, false, false, Vec::new())?;
     }
 
-    println!("\nsetup complete — start the agent server with `codemap mcp`.");
+    println!(
+        "\nsetup complete — your agent now navigates by symbol via the `codemap` CLI{}.",
+        if do_index {
+            ""
+        } else {
+            " (run `codemap index` to build the index)"
+        }
+    );
     Ok(())
 }
 
@@ -370,7 +365,7 @@ fn cmd_install(root: &Path, targets: &[String], list: bool, hooks: bool) -> Resu
         reports.extend(codemap::skills::install_hooks(root)?);
     }
     if reports.is_empty() {
-        println!("codemap: no agent hosts detected (try --target claude|cursor|copilot|agents|kilo, or --hooks)");
+        println!("codemap: nothing written (try --target claude|cursor|copilot|agents|gemini|kilo, or --hooks)");
     }
     for r in &reports {
         println!("{:9} {:?}  {}", r.target, r.action, r.path);
@@ -401,23 +396,6 @@ fn cmd_export(root: &Path, symbol: &str, format: &str, depth: i64, callers: bool
     };
     print!("{out}");
     Ok(())
-}
-
-fn cmd_mcp(root: &Path, http: bool, addr: &str) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new()?;
-    if http {
-        #[cfg(feature = "mcp-http")]
-        {
-            let sa: std::net::SocketAddr = addr.parse()?;
-            return rt.block_on(codemap::mcp::serve_http(root.to_path_buf(), sa));
-        }
-        #[cfg(not(feature = "mcp-http"))]
-        {
-            let _ = addr;
-            bail!("--http requires building codemap with --features mcp-http");
-        }
-    }
-    rt.block_on(codemap::mcp::serve_stdio(root.to_path_buf()))
 }
 
 fn db_path(root: &Path) -> PathBuf {

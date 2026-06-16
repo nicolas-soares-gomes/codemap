@@ -1,4 +1,4 @@
-//! Compact, token-budgeted projection shared by the CLI and the MCP server. Wraps the query
+//! Compact, token-budgeted projection for the CLI commands an agent runs. Wraps the query
 //! functions, detects limit truncation (by fetching limit+1), applies a token ceiling, and
 //! always signals what was cut (`truncated_by`) plus a `# next:` hint — never truncates silently.
 
@@ -8,7 +8,7 @@ use crate::types::SymbolKind;
 use anyhow::Result;
 use std::path::Path;
 
-/// Safe ceiling below the ~25k MCP response budget (chars/4 heuristic).
+/// Safe ceiling to keep one command's output cheap for an agent (chars/4 heuristic).
 const TOKEN_CEILING: usize = 22_000;
 
 fn est_tokens(s: &str) -> usize {
@@ -103,7 +103,7 @@ pub fn resolve(db: &Db, query: &str, limit: i64) -> Result<String> {
         HITS_FIELDS,
         hits.iter().map(hit_row).collect(),
         cut,
-        "read_symbol(id) for code | get_callers(id)",
+        "codemap read-symbol <id> | codemap callers <id>",
     ))
 }
 
@@ -114,7 +114,7 @@ pub fn search(db: &Db, query: &str, mode: &str, limit: i64) -> Result<String> {
         HITS_FIELDS,
         hits.iter().map(hit_row).collect(),
         cut,
-        "read_symbol(id) | get_callers(id) | search(query, mode=text)",
+        "codemap read-symbol <id> | codemap callers <id> | search --mode text",
     ))
 }
 
@@ -125,7 +125,7 @@ pub fn outline(db: &Db, file: &str) -> Result<String> {
         HITS_FIELDS,
         hits.iter().map(hit_row).collect(),
         false,
-        "read_symbol(id) for code | get_callers(id)",
+        "codemap read-symbol <id> | codemap callers <id>",
     ))
 }
 
@@ -136,7 +136,7 @@ pub fn variables(db: &Db, scope: &str, limit: i64) -> Result<String> {
         HITS_FIELDS,
         hits.iter().map(hit_row).collect(),
         cut,
-        "read_symbol(id) for code",
+        "codemap read-symbol <id>",
     ))
 }
 
@@ -159,7 +159,7 @@ pub fn edges(
         EDGES_FIELDS,
         rows.iter().map(edge_row).collect(),
         cut,
-        "read_symbol(id) for code | raise --limit/--depth to continue",
+        "codemap read-symbol <id> | raise --limit/--depth for more",
     ))
 }
 
@@ -170,7 +170,7 @@ pub fn impact(db: &Db, id: i64, depth: i64, limit: i64) -> Result<String> {
         EDGES_FIELDS,
         rows.iter().map(edge_row).collect(),
         cut,
-        "read_symbol(id) | raise --limit to see more affected",
+        "codemap read-symbol <id> | raise --limit for more affected",
     ))
 }
 
@@ -181,7 +181,7 @@ pub fn trace_to_roots(db: &Db, id: i64, depth: i64, limit: i64) -> Result<String
         EDGES_FIELDS,
         rows.iter().map(edge_row).collect(),
         cut,
-        "read_symbol(id) | impact(id) for the opposite direction",
+        "codemap read-symbol <id> | codemap impact <sym> for the opposite direction",
     ))
 }
 
@@ -193,7 +193,7 @@ pub fn references(db: &Db, id: i64, limit: i64) -> Result<String> {
         "in_symbol | file:line | role",
         rows,
         cut,
-        "read_symbol(in_symbol) for context | get_callers for calls only",
+        "codemap read-symbol <id> for context | codemap callers <sym> for calls only",
     ))
 }
 
