@@ -22,6 +22,23 @@ pub struct IndexStats {
     pub symbols: u64,
 }
 
+/// Count files of each supported language under `root` (respecting .gitignore/.codemapignore).
+pub fn detect_repo_languages(root: &Path) -> HashMap<Language, usize> {
+    let mut counts = HashMap::new();
+    for entry in WalkBuilder::new(root)
+        .add_custom_ignore_filename(".codemapignore")
+        .build()
+        .flatten()
+    {
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            if let Some(lang) = detect_lang(entry.path()) {
+                *counts.entry(lang).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
+}
+
 pub fn detect_lang(path: &Path) -> Option<Language> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("rs") => Some(Language::Rust),

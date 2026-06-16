@@ -17,8 +17,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Environment diagnostics (detect-only; never installs).
-    Doctor,
+    /// Environment check for the repo's languages (read-only; never installs).
+    Doctor {
+        #[arg(default_value = ".")]
+        root: PathBuf,
+    },
     /// Create/open the .codemap/index.db and apply migrations.
     Init {
         #[arg(default_value = ".")]
@@ -195,6 +198,17 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Guided onboarding: check the repo, install the agent skill, optionally index.
+    Setup {
+        /// Also build the index now.
+        #[arg(long)]
+        index: bool,
+        /// Also install git hooks for incremental reindex.
+        #[arg(long)]
+        hooks: bool,
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -203,7 +217,7 @@ fn main() -> Result<()> {
         .init();
 
     match Cli::parse().command {
-        Command::Doctor => codemap::doctor::run(),
+        Command::Doctor { root } => codemap::doctor::run(&root),
         Command::Init { path } => cmd_init(&path),
         Command::Status { root } => cmd_status(&root),
         Command::Prune { gc, root } => cmd_prune(&root, gc),
@@ -278,6 +292,7 @@ fn main() -> Result<()> {
             hooks,
             root,
         } => cmd_uninstall(&root, &targets, hooks),
+        Command::Setup { index, hooks, path } => cmd_setup(&path, index, hooks),
     }
 }
 
@@ -288,6 +303,39 @@ fn parse_targets(ids: &[String]) -> Result<Vec<codemap::skills::Target>> {
                 .ok_or_else(|| anyhow::anyhow!("unknown target: {s}"))
         })
         .collect()
+}
+
+fn cmd_setup(path: &Path, do_index: bool, hooks: bool) -> Result<()> {
+    println!("== codemap setup ==\n");
+    // 1) Check the repo's languages and suggest the tools that unlock precise results.
+    codemap::doctor::run(path)?;
+
+    // 2) Install the skill that teaches the agent to use codemap, into every detected host.
+    //    AGENTS.md is read by Codex, Kimi, OpenCode and other agents.
+    println!("\nteaching agents to use codemap:");
+    let mut reports = codemap::skills::install(path, &[], false)?;
+    if hooks {
+        reports.extend(codemap::skills::install_hooks(path)?);
+    }
+    if reports.is_empty() {
+        println!(
+            "  no agent hosts detected — create one (.claude/, .cursor/, .github/, AGENTS.md) \
+             or run `codemap install --target <host>`"
+        );
+    } else {
+        for r in &reports {
+            println!("  {:9} {:?}  {}", r.target, r.action, r.path);
+        }
+    }
+
+    // 3) Optionally build the index now.
+    if do_index {
+        println!("\nindexing:");
+        cmd_index(path, false, false, None)?;
+    }
+
+    println!("\nsetup complete — start the agent server with `codemap mcp`.");
+    Ok(())
 }
 
 fn cmd_install(root: &Path, targets: &[String], list: bool, hooks: bool) -> Result<()> {

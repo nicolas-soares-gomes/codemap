@@ -7,7 +7,10 @@
 //!   - scip:  an external indexer that produces a precise `.scip` (optional)
 //!   - lsp:   a language server used on demand for precise edges (optional)
 
+use crate::types::Language;
 use anyhow::Result;
+use std::collections::HashMap;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 struct LangCaps {
@@ -57,15 +60,57 @@ pub fn scip_cmd(lang: &str) -> Option<String> {
     })
 }
 
-pub fn run() -> Result<()> {
+/// Map a detected language to its row key in CAPS.
+fn caps_key(lang: Language) -> &'static str {
+    use Language::*;
+    match lang {
+        Rust => "rust",
+        TypeScript | JavaScript => "ts/js",
+        Python => "python",
+        Go => "go",
+        Java => "java",
+        CSharp => "c#",
+        Php => "php",
+        C | Cpp => "c/c++",
+        Swift => "swift",
+        Kotlin => "kotlin",
+        Clojure => "clojure",
+    }
+}
+
+pub fn run(root: &Path) -> Result<()> {
     println!("codemap doctor (read-only — never installs anything)");
     println!("  schema_version: {}", crate::db::SCHEMA_VERSION);
     println!("  git: {}", state(present("git")));
+
+    // Only suggest tools for languages actually present in this repo.
+    let mut files_per: HashMap<&str, usize> = HashMap::new();
+    for (lang, n) in crate::index::detect_repo_languages(root) {
+        *files_per.entry(caps_key(lang)).or_insert(0) += n;
+    }
+    let scanning = !files_per.is_empty();
+
     println!();
+    println!(
+        "  {}",
+        if scanning {
+            "languages found in this repo:"
+        } else {
+            "no supported files found here — showing all languages:"
+        }
+    );
     println!("  parse = tree-sitter (always on)   scip = precise index (optional)   lsp = language server (optional)");
-    println!("  {:<8} {:<6} {:<18} lsp", "lang", "parse", "scip");
+    println!(
+        "  {:<8} {:<6} {:<6} {:<18} lsp",
+        "lang", "files", "parse", "scip"
+    );
+
     let mut tips: Vec<String> = Vec::new();
     for c in CAPS {
+        let files = files_per.get(c.lang).copied();
+        if scanning && files.is_none() {
+            continue;
+        }
         let (scip, tip) = scip_state(c);
         if let Some(tip) = tip {
             tips.push(tip);
@@ -83,7 +128,11 @@ pub fn run() -> Result<()> {
         } else {
             "ok"
         };
-        println!("  {:<8} {:<6} {:<18} {}", c.lang, parse, scip, lsp);
+        let files_s = files.map(|n| n.to_string()).unwrap_or_else(|| "-".into());
+        println!(
+            "  {:<8} {:<6} {:<6} {:<18} {}",
+            c.lang, files_s, parse, scip, lsp
+        );
     }
     if !tips.is_empty() {
         println!(
