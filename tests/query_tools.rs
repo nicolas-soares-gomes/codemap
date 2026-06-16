@@ -78,3 +78,27 @@ fn variables_lists_scope_fields() {
     let vars = query::variables(&db, "Cfg", 100).unwrap();
     assert!(vars.iter().any(|h| h.name_path == "Cfg/max"));
 }
+
+#[test]
+fn projection_signals_truncation() {
+    use codemap::query::project;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join(".codemap")).unwrap();
+    fs::write(
+        root.join("src/m.rs"),
+        "fn aa1(){}\nfn aa2(){}\nfn aa3(){}\nfn aa4(){}\nfn aa5(){}\n",
+    )
+    .unwrap();
+    let mut db = Db::open(&root.join(".codemap/index.db")).unwrap();
+    index::index_full(&mut db, root).unwrap();
+
+    let out = project::resolve(&db, "aa", 2).unwrap();
+    assert!(
+        out.contains("truncated_by=limit"),
+        "should signal truncation: {out}"
+    );
+    assert!(out.contains("# next:"), "should give a next hint");
+    assert_eq!(out.matches("sym:").count(), 2, "exactly limit rows emitted");
+}

@@ -1,8 +1,9 @@
-//! MCP server (rmcp, stdio): exposes the codemap navigation tools to agents. Navigation
-//! tools return compact, code-free rows; read_symbol is the only tool that returns code.
+//! MCP server (rmcp, stdio): exposes the codemap navigation tools to agents. Navigation tools
+//! return compact, code-free rows (rendered by `query::project`); read_symbol is the only tool
+//! that returns code.
 
 use crate::db::Db;
-use crate::query::{self, Code, EdgeHit, Hit, RefHit};
+use crate::query::{self, project};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use serde::Deserialize;
@@ -67,8 +68,7 @@ impl CodemapServer {
     )]
     fn resolve_symbol(&self, Parameters(a): Parameters<ResolveArgs>) -> Result<String, String> {
         let db = self.db()?;
-        let hits = query::resolve(&db, &a.query, a.limit.unwrap_or(25)).map_err(e)?;
-        Ok(proj_hits(&format!("resolve \"{}\"", a.query), &hits))
+        project::resolve(&db, &a.query, a.limit.unwrap_or(25)).map_err(e)
     }
 
     #[tool(
@@ -78,8 +78,7 @@ impl CodemapServer {
     fn read_symbol(&self, Parameters(a): Parameters<SymbolArgs>) -> Result<String, String> {
         let mut db = self.db()?;
         let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
-        let code = query::read_symbol(&mut db, &self.root, id).map_err(e)?;
-        Ok(proj_read(&code))
+        project::read_symbol(&mut db, &self.root, id).map_err(e)
     }
 
     #[tool(
@@ -104,8 +103,7 @@ impl CodemapServer {
     )]
     fn get_file_outline(&self, Parameters(a): Parameters<OutlineArgs>) -> Result<String, String> {
         let db = self.db()?;
-        let hits = query::outline(&db, &a.file).map_err(e)?;
-        Ok(proj_hits(&format!("outline {}", a.file), &hits))
+        project::outline(&db, &a.file).map_err(e)
     }
 
     #[tool(
@@ -114,14 +112,13 @@ impl CodemapServer {
     )]
     fn search_code(&self, Parameters(a): Parameters<SearchArgs>) -> Result<String, String> {
         let db = self.db()?;
-        let hits = query::search(
+        project::search(
             &db,
             &a.query,
             a.mode.as_deref().unwrap_or("symbol"),
             a.limit.unwrap_or(30),
         )
-        .map_err(e)?;
-        Ok(proj_hits(&format!("search \"{}\"", a.query), &hits))
+        .map_err(e)
     }
 
     #[tool(
@@ -131,9 +128,7 @@ impl CodemapServer {
     fn impact(&self, Parameters(a): Parameters<EdgesArgs>) -> Result<String, String> {
         let db = self.db()?;
         let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
-        let hits =
-            query::impact(&db, id, a.depth.unwrap_or(4), a.limit.unwrap_or(80)).map_err(e)?;
-        Ok(proj_edges("impact", id, a.depth.unwrap_or(4), &hits))
+        project::impact(&db, id, a.depth.unwrap_or(4), a.limit.unwrap_or(80)).map_err(e)
     }
 
     #[tool(
@@ -143,14 +138,7 @@ impl CodemapServer {
     fn trace_to_roots(&self, Parameters(a): Parameters<EdgesArgs>) -> Result<String, String> {
         let db = self.db()?;
         let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
-        let hits = query::trace_to_roots(&db, id, a.depth.unwrap_or(6), a.limit.unwrap_or(40))
-            .map_err(e)?;
-        Ok(proj_edges(
-            "roots reaching",
-            id,
-            a.depth.unwrap_or(6),
-            &hits,
-        ))
+        project::trace_to_roots(&db, id, a.depth.unwrap_or(6), a.limit.unwrap_or(40)).map_err(e)
     }
 
     #[tool(
@@ -160,8 +148,7 @@ impl CodemapServer {
     fn get_references(&self, Parameters(a): Parameters<SymbolArgs>) -> Result<String, String> {
         let db = self.db()?;
         let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
-        let refs = query::references(&db, id, 100).map_err(e)?;
-        Ok(proj_refs(id, &refs))
+        project::references(&db, id, 100).map_err(e)
     }
 
     #[tool(
@@ -170,8 +157,7 @@ impl CodemapServer {
     )]
     fn get_variables(&self, Parameters(a): Parameters<ScopeArgs>) -> Result<String, String> {
         let db = self.db()?;
-        let hits = query::variables(&db, &a.scope, a.limit.unwrap_or(100)).map_err(e)?;
-        Ok(proj_hits(&format!("variables in {}", a.scope), &hits))
+        project::variables(&db, &a.scope, a.limit.unwrap_or(100)).map_err(e)
     }
 
     fn db(&self) -> Result<Db, String> {
@@ -188,16 +174,16 @@ impl CodemapServer {
     fn edges(&self, a: &EdgesArgs, forward: bool) -> Result<String, String> {
         let db = self.db()?;
         let id = query::resolve_arg(&db, &a.symbol).map_err(e)?;
-        let depth = a.depth.unwrap_or(1);
-        let limit = a.limit.unwrap_or(50);
-        let hits = if forward {
-            query::callees(&db, id, depth, limit)
-        } else {
-            query::callers(&db, id, depth, limit)
-        }
-        .map_err(e)?;
-        let label = if forward { "callees" } else { "callers" };
-        Ok(proj_edges(label, id, depth, &hits))
+        let label = if forward { "callees of" } else { "callers of" };
+        project::edges(
+            &db,
+            label,
+            id,
+            a.depth.unwrap_or(1),
+            a.limit.unwrap_or(50),
+            forward,
+        )
+        .map_err(e)
     }
 }
 
@@ -214,83 +200,4 @@ pub async fn serve_stdio(root: PathBuf) -> anyhow::Result<()> {
 
 fn e<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
-}
-
-fn kind_label(k: Option<crate::types::SymbolKind>) -> String {
-    k.map(|k| format!("{k:?}").to_lowercase())
-        .unwrap_or_else(|| "?".into())
-}
-
-fn proj_hits(header: &str, hits: &[Hit]) -> String {
-    let mut s = format!(
-        "# {header}  ({} matches)\n# fields: id | name_path | file:line | kind\n",
-        hits.len()
-    );
-    for h in hits {
-        s.push_str(&format!(
-            "sym:{} | {} | {}:{} | {}\n",
-            h.id,
-            h.name_path,
-            h.file,
-            h.line,
-            kind_label(h.kind)
-        ));
-    }
-    if !hits.is_empty() {
-        s.push_str("# next: read_symbol(id) for code | get_callers(id) for who uses it\n");
-    }
-    s
-}
-
-fn proj_edges(label: &str, root_id: i64, depth: i64, hits: &[EdgeHit]) -> String {
-    let mut s = format!(
-        "# {label} of sym:{root_id}  (depth<={depth}, {} shown)\n# fields: id | name_path | file:line | kind | depth | prov/res\n",
-        hits.len()
-    );
-    for h in hits {
-        let pr = match (h.provenance, h.resolution) {
-            (Some(p), Some(r)) => format!("{}/{}", p.abbrev(), r.abbrev()),
-            _ => "-".into(),
-        };
-        s.push_str(&format!(
-            "sym:{} | {} | {}:{} | {} | {} | {}\n",
-            h.id,
-            h.name_path,
-            h.file,
-            h.line,
-            kind_label(h.kind),
-            h.depth,
-            pr
-        ));
-    }
-    s.push_str("# next: read_symbol(id) for code\n");
-    s
-}
-
-fn proj_refs(id: i64, refs: &[RefHit]) -> String {
-    let mut s = format!(
-        "# references to sym:{id}  ({} shown)\n# fields: in_symbol | file:line | role\n",
-        refs.len()
-    );
-    for r in refs {
-        let enc = r.enclosing.as_deref().unwrap_or("(top-level)");
-        let role = r
-            .role
-            .map(|x| format!("{x:?}").to_lowercase())
-            .unwrap_or_else(|| "?".into());
-        s.push_str(&format!("{enc} | {}:{} | {role}\n", r.file, r.line));
-    }
-    s
-}
-
-fn proj_read(c: &Code) -> String {
-    let state = if c.reindexed { " (reindexed)" } else { "" };
-    let mut s = format!(
-        "# sym:{} {}  {}:{}-{}{state}\n",
-        c.id, c.name_path, c.file, c.start_line, c.end_line
-    );
-    for (i, line) in c.code.lines().enumerate() {
-        s.push_str(&format!("{:>5}  {line}\n", c.start_line as usize + i));
-    }
-    s
 }

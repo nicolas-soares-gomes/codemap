@@ -1,8 +1,7 @@
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use codemap::db::Db;
-use codemap::query;
-use codemap::types::SymbolKind;
+use codemap::query::{self, project};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -375,162 +374,60 @@ fn cmd_index(path: &Path, incremental: bool, tier1: bool, scip: Option<PathBuf>)
 
 fn cmd_resolve(root: &Path, query: &str, limit: i64) -> Result<()> {
     let db = open_existing(root)?;
-    let hits = query::resolve(&db, query, limit)?;
-    println!("# resolve \"{query}\"  ({} matches)", hits.len());
-    println!("# fields: id | name_path | file:line | kind");
-    for h in &hits {
-        println!(
-            "sym:{} | {} | {}:{} | {}",
-            h.id,
-            h.name_path,
-            h.file,
-            h.line,
-            kind_label(h.kind)
-        );
-    }
-    if !hits.is_empty() {
-        println!("# next: read-symbol <id> for code");
-    }
+    print!("{}", project::resolve(&db, query, limit)?);
     Ok(())
 }
 
 fn cmd_search(root: &Path, query: &str, mode: &str, limit: i64) -> Result<()> {
     let db = open_existing(root)?;
-    let hits = query::search(&db, query, mode, limit)?;
-    println!(
-        "# search \"{query}\"  (mode={mode}, {} matches)",
-        hits.len()
-    );
-    println!("# fields: id | name_path | file:line | kind");
-    for h in &hits {
-        println!(
-            "sym:{} | {} | {}:{} | {}",
-            h.id,
-            h.name_path,
-            h.file,
-            h.line,
-            kind_label(h.kind)
-        );
-    }
+    print!("{}", project::search(&db, query, mode, limit)?);
     Ok(())
 }
 
 fn cmd_outline(root: &Path, file: &str) -> Result<()> {
     let db = open_existing(root)?;
-    let hits = query::outline(&db, file)?;
-    println!("# outline {file}  ({} symbols)", hits.len());
-    for h in &hits {
-        println!(
-            "sym:{} | {} | :{} | {}",
-            h.id,
-            h.name_path,
-            h.line,
-            kind_label(h.kind)
-        );
-    }
+    print!("{}", project::outline(&db, file)?);
     Ok(())
 }
 
 fn cmd_read_symbol(root: &Path, id_arg: &str) -> Result<()> {
     let mut db = open_existing(root)?;
     let id = query::resolve_arg(&db, id_arg)?;
-    let c = query::read_symbol(&mut db, root, id)?;
-    let state = if c.reindexed { " (reindexed)" } else { "" };
-    println!(
-        "# sym:{} {}  {}:{}-{}{}",
-        c.id, c.name_path, c.file, c.start_line, c.end_line, state
-    );
-    for (i, line) in c.code.lines().enumerate() {
-        println!("{:>5}  {line}", c.start_line as usize + i);
-    }
+    print!("{}", project::read_symbol(&mut db, root, id)?);
     Ok(())
 }
 
 fn cmd_edges(root: &Path, symbol: &str, depth: i64, limit: i64, forward: bool) -> Result<()> {
     let db = open_existing(root)?;
     let id = query::resolve_arg(&db, symbol)?;
-    let hits = if forward {
-        query::callees(&db, id, depth, limit)?
-    } else {
-        query::callers(&db, id, depth, limit)?
-    };
-    print_edges(if forward { "callees of" } else { "callers of" }, id, &hits);
+    let label = if forward { "callees of" } else { "callers of" };
+    print!("{}", project::edges(&db, label, id, depth, limit, forward)?);
     Ok(())
 }
 
 fn cmd_impact(root: &Path, symbol: &str, depth: i64, limit: i64) -> Result<()> {
     let db = open_existing(root)?;
     let id = query::resolve_arg(&db, symbol)?;
-    let hits = query::impact(&db, id, depth, limit)?;
-    print_edges("impact of", id, &hits);
+    print!("{}", project::impact(&db, id, depth, limit)?);
     Ok(())
 }
 
 fn cmd_trace(root: &Path, symbol: &str, max_depth: i64, limit: i64) -> Result<()> {
     let db = open_existing(root)?;
     let id = query::resolve_arg(&db, symbol)?;
-    let hits = query::trace_to_roots(&db, id, max_depth, limit)?;
-    print_edges("roots reaching", id, &hits);
+    print!("{}", project::trace_to_roots(&db, id, max_depth, limit)?);
     Ok(())
 }
 
 fn cmd_refs(root: &Path, symbol: &str, limit: i64) -> Result<()> {
     let db = open_existing(root)?;
     let id = query::resolve_arg(&db, symbol)?;
-    let refs = query::references(&db, id, limit)?;
-    println!("# references to sym:{id}  ({} shown)", refs.len());
-    println!("# fields: in_symbol | file:line | role");
-    for r in &refs {
-        let enc = r.enclosing.as_deref().unwrap_or("(top-level)");
-        let role = r
-            .role
-            .map(|x| format!("{x:?}").to_lowercase())
-            .unwrap_or_else(|| "?".into());
-        println!("{enc} | {}:{} | {role}", r.file, r.line);
-    }
+    print!("{}", project::references(&db, id, limit)?);
     Ok(())
 }
 
 fn cmd_variables(root: &Path, scope: &str, limit: i64) -> Result<()> {
     let db = open_existing(root)?;
-    let hits = query::variables(&db, scope, limit)?;
-    println!("# variables in {scope}  ({} shown)", hits.len());
-    println!("# fields: id | name_path | file:line | kind");
-    for h in &hits {
-        println!(
-            "sym:{} | {} | {}:{} | {}",
-            h.id,
-            h.name_path,
-            h.file,
-            h.line,
-            kind_label(h.kind)
-        );
-    }
+    print!("{}", project::variables(&db, scope, limit)?);
     Ok(())
-}
-
-fn print_edges(label: &str, id: i64, hits: &[query::EdgeHit]) {
-    println!("# {label} sym:{id}  ({} shown)", hits.len());
-    println!("# fields: id | name_path | file:line | kind | depth | prov/res");
-    for h in hits {
-        let pr = match (h.provenance, h.resolution) {
-            (Some(p), Some(r)) => format!("{}/{}", p.abbrev(), r.abbrev()),
-            _ => "-".into(),
-        };
-        println!(
-            "sym:{} | {} | {}:{} | {} | {} | {}",
-            h.id,
-            h.name_path,
-            h.file,
-            h.line,
-            kind_label(h.kind),
-            h.depth,
-            pr
-        );
-    }
-}
-
-fn kind_label(k: Option<SymbolKind>) -> String {
-    k.map(|k| format!("{k:?}").to_lowercase())
-        .unwrap_or_else(|| "?".into())
 }

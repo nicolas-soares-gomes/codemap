@@ -7,6 +7,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::OptionalExtension;
 use std::path::Path;
 
+pub mod project;
+
 /// Compact navigation row (no code).
 #[derive(Debug, Clone)]
 pub struct Hit {
