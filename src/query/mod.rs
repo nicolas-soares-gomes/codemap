@@ -377,8 +377,11 @@ pub fn variables(db: &Db, scope: &str, limit: i64) -> Result<Vec<Hit>> {
     Ok(hits)
 }
 
-/// Search symbols by name via the contentless FTS5 index (prefix match, case-insensitive).
-/// mode=symbol|text both query the name index (we don't index code); semantic is unavailable.
+/// Search symbols by name. mode=symbol (default) is a fast FTS5 token-PREFIX match — use it when
+/// you know how a name starts. mode=text is a slower case-insensitive SUBSTRING match over the
+/// name and name_path — use it for a fragment in the middle of an identifier (e.g. `inch` finds
+/// `OneinchClient`). codemap indexes symbols, not file contents, so neither finds text that only
+/// appears in strings/comments/config — use grep for that. semantic is unavailable.
 pub fn search(db: &Db, query: &str, mode: &str, limit: i64) -> Result<Vec<Hit>> {
     if mode == "semantic" {
         return Err(anyhow!(
@@ -392,6 +395,9 @@ pub fn search(db: &Db, query: &str, mode: &str, limit: i64) -> Result<Vec<Hit>> 
     if term.is_empty() {
         return Ok(Vec::new());
     }
+    if mode == "text" {
+        return search_substring(db, &term, limit);
+    }
     let mut stmt = db.conn.prepare(
         "SELECT s.id, np.text, fp.text, s.start_line, s.kind
          FROM symbol_fts
@@ -404,6 +410,26 @@ pub fn search(db: &Db, query: &str, mode: &str, limit: i64) -> Result<Vec<Hit>> 
     )?;
     let hits = stmt
         .query_map(rusqlite::params![format!("{term}*"), limit], row_to_hit)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(hits)
+}
+
+/// Case-insensitive substring match over symbol name and name_path (LIKE %term%). `_` in the term
+/// is escaped so it stays literal rather than acting as a LIKE wildcard.
+fn search_substring(db: &Db, term: &str, limit: i64) -> Result<Vec<Hit>> {
+    let pattern = format!("%{}%", term.replace('_', "\\_"));
+    let mut stmt = db.conn.prepare(
+        "SELECT s.id, np.text, fp.text, s.start_line, s.kind
+         FROM symbol s
+         JOIN string_pool n  ON n.id  = s.name_sid
+         JOIN string_pool np ON np.id = s.name_path_sid
+         JOIN file f         ON f.id  = s.file_id
+         JOIN string_pool fp ON fp.id = f.path_sid
+         WHERE n.text LIKE ?1 ESCAPE '\\' OR np.text LIKE ?1 ESCAPE '\\'
+         ORDER BY s.id LIMIT ?2",
+    )?;
+    let hits = stmt
+        .query_map(rusqlite::params![pattern, limit], row_to_hit)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(hits)
 }

@@ -4,7 +4,8 @@ these in your shell.
 
 1. Find it (no code returned):
    - codemap resolve <name>      exact name or Type/method -> stable ids
-   - codemap search <query>      fuzzy name search -> ids
+   - codemap search <query>      name prefix search -> ids (add --mode text for a substring,
+                                 e.g. `codemap search inch --mode text` finds OneinchClient)
    - codemap outline <file>      a file's symbols, instead of reading the file
 
 2. Understand relations (no code; each edge is tagged prov/res):

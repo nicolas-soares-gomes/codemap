@@ -38,6 +38,23 @@ fn search_finds_symbol() {
 }
 
 #[test]
+fn search_text_mode_matches_substring() {
+    let (_d, db) = setup();
+    // "oot" sits in the middle of "root_fn": prefix (symbol) mode misses it, substring (text) finds it.
+    assert!(
+        query::search(&db, "oot", "symbol", 10).unwrap().is_empty(),
+        "prefix mode must not match a mid-identifier substring"
+    );
+    assert!(
+        query::search(&db, "oot", "text", 10)
+            .unwrap()
+            .iter()
+            .any(|h| h.name_path == "root_fn"),
+        "text mode must match a substring"
+    );
+}
+
+#[test]
 fn impact_is_transitive_callers() {
     let (_d, db) = setup();
     let leaf = query::resolve(&db, "leaf", 5).unwrap()[0].id;
