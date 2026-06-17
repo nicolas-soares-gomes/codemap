@@ -70,7 +70,7 @@ codemap refs <sym>          # every use, resolved to the enclosing symbol
 codemap impact <sym>        # transitive callers — what breaks if you change it
 codemap trace <sym>         # call chain up to entrypoints
 codemap variables <scope>   # fields/consts of a type or module
-codemap read-symbol <id>    # the only command that returns code (its range only)
+codemap read-symbol <id...> # the only command that returns code (its range only; accepts many ids)
 codemap export <sym> --format dot|mermaid
 ```
 

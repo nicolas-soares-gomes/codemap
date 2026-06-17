@@ -101,9 +101,9 @@ enum Command {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
-    /// Read one symbol's code (minimal range). Accepts `sym:N` or `N`.
+    /// Read one or more symbols' code (minimal range). Accepts `sym:N`, `N`, or name(s).
     ReadSymbol {
-        id: String,
+        ids: Vec<String>,
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
@@ -258,7 +258,7 @@ fn main() -> Result<()> {
             limit,
             root,
         } => cmd_grep(&root, &pattern, ignore_case, limit),
-        Command::ReadSymbol { id, root } => cmd_read_symbol(&root, &id),
+        Command::ReadSymbol { ids, root } => cmd_read_symbol(&root, &ids),
         Command::Callers {
             symbol,
             depth,
@@ -642,10 +642,18 @@ fn cmd_outline(root: &Path, file: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_read_symbol(root: &Path, id_arg: &str) -> Result<()> {
+fn cmd_read_symbol(root: &Path, id_args: &[String]) -> Result<()> {
+    if id_args.is_empty() {
+        bail!("read-symbol needs at least one id/name (e.g. `codemap read-symbol sym:42`)");
+    }
     let mut db = open_existing(root)?;
-    let id = query::resolve_arg(&db, id_arg)?;
-    print!("{}", project::read_symbol(&mut db, root, id)?);
+    for (i, arg) in id_args.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let id = query::resolve_arg(&db, arg)?;
+        print!("{}", project::read_symbol(&mut db, root, id)?);
+    }
     Ok(())
 }
 

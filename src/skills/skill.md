@@ -12,8 +12,8 @@ just to inspect a symbol.
    - codemap impact <sym>               transitive callers — what breaks if you change it
    - codemap trace <sym>                call chain up to entrypoints
 
-2. Understand: codemap rows give `file:start-end`. Read EXACTLY that range — `read-symbol <id>`
-   returns precisely those lines, or use your Read tool with offset=start and limit≈(end-start+1)
+2. Understand: codemap rows give `file:start-end`. Read EXACTLY that range — `read-symbol <id...>`
+   returns precisely those lines (pass several ids at once), or use your Read tool with offset=start and limit≈(end-start+1)
    (add a few context lines if needed). Do NOT read the whole file just to inspect one symbol; that
    is the main way to waste tokens. Read more only when a range genuinely spans it, or when you must
    verify a path the relations surfaced.
